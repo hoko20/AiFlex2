@@ -323,11 +323,165 @@ static NSDictionary *DXBody(NSData *body) {
  if (!directory && ![attributes[NSFileType] isEqual:NSFileTypeRegular]) return nil;
  return resolved;
 }
+- (BOOL)setInvocation:(NSInvocation *)invocation value:(id)value type:(const char *)type index:(NSInteger)index error:(NSString **)error {
+ if (!type) { if (error) *error = @"方法参数类型未知"; return NO; } switch (type[0]) {
+  case '@': {
+   if (type[1] == '?') { if (error) *error = @"暂不支持 block 参数"; return NO; }
+   id objectValue = [value isKindOfClass:NSNull.class] ? nil : value;
+   if (objectValue && ![objectValue isKindOfClass:NSString.class] && ![objectValue isKindOfClass:NSNumber.class] && ![objectValue isKindOfClass:NSArray.class] && ![objectValue isKindOfClass:NSDictionary.class]) {
+    if (error) *error = @"对象参数仅支持字符串、数字、null、数组或字典";
+    return NO;
+   }
+   [invocation setArgument:&objectValue atIndex:index];
+   return YES;
+  }
+  case ':': {
+   if (![value isKindOfClass:NSString.class]) { if (error) *error = @"SEL 参数需要字符串"; return NO; }
+   SEL selector = NSSelectorFromString(value);
+   [invocation setArgument:&selector atIndex:index];
+   return YES;
+  }
+  case '*': {
+   if (![value isKindOfClass:NSString.class]) { if (error) *error = @"C 字符串参数需要字符串"; return NO; }
+   const char *text = [value UTF8String];
+   [invocation setArgument:&text atIndex:index];
+   return YES;
+  }
+  default: break;
+ }
+ if (![value isKindOfClass:NSNumber.class]) {
+  if (error) *error = [NSString stringWithFormat:@"第 %ld 个参数需要数字", (long)index - 1];
+  return NO;
+ }
+ NSNumber *number = value;
+ switch (type[0]) {
+  case 'c': { char v = number.charValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'C': { unsigned char v = number.unsignedCharValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'B': { bool v = number.boolValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 's': { short v = number.shortValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'S': { unsigned short v = number.unsignedShortValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'i': { int v = number.intValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'I': { unsigned int v = number.unsignedIntValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'l': { long v = number.longValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'L': { unsigned long v = number.unsignedLongValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'q': { long long v = number.longLongValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'Q': { unsigned long long v = number.unsignedLongLongValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'f': { float v = number.floatValue; [invocation setArgument:&v atIndex:index]; break; }
+  case 'd': { double v = number.doubleValue; [invocation setArgument:&v atIndex:index]; break; }
+  default:
+   if (error) *error = [NSString stringWithFormat:@"暂不支持参数类型 %s（结构体/联合体/指针）", type];
+   return NO;
+ }
+ return YES;
+}
+
+- (NSDictionary *)invokeMethod:(NSDictionary *)arguments error:(NSString **)error {
+ id identifier = arguments[@"id"];
+ NSString *className = arguments[@"class"];
+ NSString *selectorName = arguments[@"selector"];
+ if (![selectorName isKindOfClass:NSString.class] || selectorName.length == 0 || selectorName.length > 300) {
+  if (error) *error = @"selector 无效（1–300 个字符）";
+  return nil;
+ }
+ static NSSet *blockedSelectors; static dispatch_once_t once;
+ dispatch_once(&once, ^{ blockedSelectors = [NSSet setWithArray:@[@"dealloc", @"release", @"retain", @"autorelease", @"retainCount"]]; });
+ if ([blockedSelectors containsObject:selectorName]) {
+  if (error) *error = [@"该 selector 不允许远程调用：" stringByAppendingString:selectorName];
+  return nil;
+ }
+ id target = nil; BOOL classTarget = NO;
+ if ([identifier isKindOfClass:NSString.class]) {
+  target = [self.views objectForKey:identifier];
+  if (!target) { if (error) *error = @"对象 ID 已过期，请重新读取页面元素"; return nil; }
+ } else if ([className isKindOfClass:NSString.class] && className.length) {
+  Class cls = NSClassFromString(className);
+  if (!cls) { if (error) *error = [@"找不到类：" stringByAppendingString:className]; return nil; }
+  target = (id)cls; classTarget = YES;
+ } else {
+  target = self.selectedObject;
+  if (!target) { if (error) *error = @"没有可调用对象，请传 id、class 或先在 FLEX 中选中对象"; return nil; }
+ }
+ SEL selector = NSSelectorFromString(selectorName);
+ Method method = classTarget ? class_getClassMethod((Class)target, selector) : class_getInstanceMethod([target class], selector);
+ if (!method) { if (error) *error = [@"目标不存在该 selector：" stringByAppendingString:selectorName]; return nil; }
+ NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+ NSArray *values = arguments[@"arguments"] ?: @[];
+ if (![values isKindOfClass:NSArray.class]) { if (error) *error = @"arguments 必须是数组"; return nil; }
+ if (values.count + 2 != signature.numberOfArguments) {
+  if (error) *error = [NSString stringWithFormat:@"%@ 需要 %lu 个参数，收到 %lu 个", selectorName, (unsigned long)(signature.numberOfArguments - 2), (unsigned long)values.count];
+  return nil;
+ }
+ NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+ invocation.target = target;
+ invocation.selector = selector;
+ NSMutableArray *types = [NSMutableArray new];
+ for (NSUInteger i = 0; i < values.count; i++) {
+  const char *type = [signature getArgumentTypeAtIndex:i + 2];
+  [types addObject:[NSString stringWithUTF8String:type] ?: @"?"];
+  if (![self setInvocation:invocation value:values[i] type:type index:(NSInteger)i + 2 error:error]) return nil;
+ }
+ @try {
+  [invocation invoke];
+ } @catch (NSException *exception) {
+  if (error) *error = [NSString stringWithFormat:@"调用 %@ 抛出异常：%@", selectorName, exception.reason ?: exception.name];
+  return nil;
+ }
+ NSMutableDictionary *result = [@{@"invoked":@YES,@"target":classTarget?NSStringFromClass((Class)target):NSStringFromClass([target class]),@"selector":selectorName,@"argumentTypes":types,@"requeryRequired":@YES} mutableCopy];
+ const char *returnType = signature.methodReturnType;
+ NSString *typeName = returnType ? [NSString stringWithUTF8String:returnType] : @"?";
+ result[@"returnType"] = typeName;
+ if (returnType[0] == 'v') {
+  result[@"returnValue"] = NSNull.null;
+ } else if (returnType[0] == '@') {
+  __unsafe_unretained id objectValue = nil;
+  [invocation getReturnValue:&objectValue];
+  result[@"returnValue"] = objectValue ? DXShort([objectValue description], 2000) : NSNull.null;
+  result[@"returnClass"] = objectValue ? NSStringFromClass([objectValue class]) : NSNull.null;
+ } else if (returnType[0] == ':') {
+  SEL returned = NULL; [invocation getReturnValue:&returned];
+  result[@"returnValue"] = returned ? NSStringFromSelector(returned) : NSNull.null;
+ } else if (returnType[0] == 'c') {
+  char v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'C') {
+  unsigned char v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'B') {
+  bool v = false; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 's') {
+  short v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'S') {
+  unsigned short v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'i') {
+  int v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'I') {
+  unsigned int v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'l') {
+  long v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'L') {
+  unsigned long v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'q') {
+  long long v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'Q') {
+  unsigned long long v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'f') {
+  float v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else if (returnType[0] == 'd') {
+  double v = 0; [invocation getReturnValue:&v]; result[@"returnValue"] = @(v);
+ } else {
+  result[@"returnUnsupported"] = @YES;
+  result[@"returnValue"] = [NSString stringWithFormat:@"无法序列化的返回类型 %@", typeName];
+ }
+ return result;
+}
+
 - (NSDictionary *)execute:(NSString *)operation arguments:(NSDictionary *)arguments error:(NSString **)error {
  NSAssert(NSThread.isMainThread,@"FLEX runtime must run on main thread");
  if (![operation isKindOfClass:NSString.class] || ![arguments isKindOfClass:NSDictionary.class]) { if(error)*error=@"命令格式错误"; return nil; }
- if([operation isEqual:@"tool_catalog"])return @{@"tools":[self toolCatalog],@"arbitraryMethodInvocation":@NO};
+ if([operation isEqual:@"tool_catalog"])return @{@"tools":[self toolCatalog],@"arbitraryMethodInvocation":@YES};
  if([operation isEqual:@"gesture_capabilities"])return [FLEXAiFlexTouchDriver backendCapabilities];
+ if([operation isEqual:@"invoke_method"]){
+  NSDictionary *result=[self invokeMethod:arguments error:error];
+  return result;
+ }
  if([operation isEqual:@"input_text"]){
   NSString *identifier=arguments[@"id"],*text=arguments[@"text"];UIView *view=[identifier isKindOfClass:NSString.class]?[self.views objectForKey:identifier]:nil;
   if(![text isKindOfClass:NSString.class]||text.length>4096||![self isVisibleInput:view]||(![view isKindOfClass:UITextField.class]&&![view isKindOfClass:UITextView.class])){if(error)*error=@"仅能输入当前目标 App 的可见文本框（最多 4096 字符）";return nil;}
@@ -378,7 +532,7 @@ static NSDictionary *DXBody(NSData *body) {
  if([operation isEqual:@"select_row"]){
   UIViewController *controller=[self flexVisibleController];id section=arguments[@"section"],row=arguments[@"row"];
   UITableView *table=[self tableInController:controller];
-  if(![self allowsRowSelection:controller]||!table||![section isKindOfClass:NSNumber.class]||![row isKindOfClass:NSNumber.class]||[section integerValue]<0||[row integerValue]<0){if(error)*error=@"仅支持已验证的类/方法列表导航；对象方法调用未开放";return nil;}
+  if(![self allowsRowSelection:controller]||!table||![section isKindOfClass:NSNumber.class]||![row isKindOfClass:NSNumber.class]||[section integerValue]<0||[row integerValue]<0){if(error)*error=@"仅支持已验证的类/方法列表导航；对象方法行请用 invoke_method 调用";return nil;}
   NSIndexPath *path=[NSIndexPath indexPathForRow:[row integerValue] inSection:[section integerValue]];
   NSString *identifier=arguments[@"id"];
   if(![identifier isKindOfClass:NSString.class]||[self.views objectForKey:identifier]!=[table cellForRowAtIndexPath:path]||![table.indexPathsForVisibleRows containsObject:path]||![table.delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]){if(error)*error=@"列表行 ID 已过期或离开可见范围，请重新读取 flex_ui_state";return nil;}
@@ -393,7 +547,7 @@ static NSDictionary *DXBody(NSData *body) {
   bar.text=query;id<UISearchBarDelegate> delegate=bar.delegate;if([delegate respondsToSelector:@selector(searchBar:textDidChange:)])[delegate searchBar:bar textDidChange:query];
   [bar resignFirstResponder];return @{@"searched":@YES,@"query":query,@"requeryRequired":@YES};
  }
- if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"hit_test",@"view_tree",@"object_info",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"cookies_list",@"sandbox_list",@"defaults_keys"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"sandbox_read",@"defaults_get",@"keychain_list",@"activate_control",@"scroll_view",@"set_view",@"set_network_recording",@"undo"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304},@"arbitraryMethodInvocation":@NO};
+ if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"hit_test",@"view_tree",@"object_info",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"cookies_list",@"sandbox_list",@"defaults_keys"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"sandbox_read",@"defaults_get",@"keychain_list",@"activate_control",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304},@"arbitraryMethodInvocation":@YES};
  if ([operation isEqual:@"capture_screen"]) {
   BOOL flex=[arguments[@"surface"] isEqual:@"flex"];
   if(flex&&![self flexVisibleController]){if(error)*error=@"FLEX 功能页不可见，请先收起会话并打开工具页";return nil;}
