@@ -382,7 +382,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 - (NSArray<NSDictionary *> *)toolRows {
     return @[
         @{@"name": @"aiflex_status", @"detail": @"读取注入 App、端点与工具组状态", @"enabled": @YES},
-        @{@"name": @"aiflex_read", @"detail": @"页面元素、视图树、对象、网络与沙盒元数据", @"enabled": @YES},
+        @{@"name": @"aiflex_read", @"detail": @"页面元素、视图树、对象、界面实例、网络与沙盒元数据", @"enabled": @YES},
         @{@"name": @"aiflex_sensitive", @"detail": @"头文件、日志/网络正文、截图（需敏感读取授权）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
         @{@"name": @"aiflex_control", @"detail": @"导航、输入、激活控件、调用方法与真实手势（需界面控制授权）", @"enabled": @([FLEXAiFlexMCPServer controlEnabled])}
     ];

@@ -32,6 +32,8 @@ static NSDictionary *DXBody(NSData *body) {
 @interface FLEXAiFlexRuntime ()
 @property NSMapTable<NSString *, id> *views;
 @property NSMapTable<UIView *, NSString *> *viewIDs;
+@property NSMapTable<NSString *, id> *objects;
+@property NSMapTable<id, NSString *> *objectIDs;
 @property NSDictionary *undoState;
 @property NSTimeInterval lastCaptureAt;
 @property FLEXAiFlexTouchDriver *touchDriver;
@@ -125,7 +127,7 @@ static NSDictionary *DXBody(NSData *body) {
   });
  }];
 }
-- (instancetype)init { if ((self=[super init])) { _views=[NSMapTable strongToWeakObjectsMapTable]; _viewIDs=[NSMapTable weakToStrongObjectsMapTable]; } return self; }
+- (instancetype)init { if ((self=[super init])) { _views=[NSMapTable strongToWeakObjectsMapTable]; _viewIDs=[NSMapTable weakToStrongObjectsMapTable]; _objects=[NSMapTable strongToWeakObjectsMapTable]; _objectIDs=[NSMapTable weakToStrongObjectsMapTable]; } return self; }
 - (BOOL)isTargetWindow:(UIWindow *)window {
  if(!window||window.hidden||window.alpha<.01||window==FLEXManager.sharedManager.explorerWindow)return NO;
  for(NSString *name in @[@"FLEXWindow",@"FLEXDoKitFloatingWindow"]){Class cls=NSClassFromString(name);if(cls&&[window isKindOfClass:cls])return NO;}
@@ -144,6 +146,18 @@ static NSDictionary *DXBody(NSData *body) {
  NSString *identifier=[self.viewIDs objectForKey:view];
  if(!identifier){identifier=NSUUID.UUID.UUIDString;[self.viewIDs setObject:identifier forKey:view];}
  [self.views setObject:view forKey:identifier];return identifier;
+}
+- (NSString *)registerObject:(id)object {
+ if(!object)return nil;
+ NSString *identifier=[self.objectIDs objectForKey:object];
+ if(!identifier){identifier=[@"obj-" stringByAppendingString:NSUUID.UUID.UUIDString];[self.objectIDs setObject:identifier forKey:object];}
+ [self.objects setObject:object forKey:identifier];return identifier;
+}
+- (id)objectForIdentifier:(NSString *)identifier {
+ if(![identifier isKindOfClass:NSString.class])return nil;
+ id object=[self.views objectForKey:identifier];
+ if(!object)object=[self.objects objectForKey:identifier];
+ return object;
 }
 - (BOOL)isAttached:(UIView *)view {UIWindow *window=[self window];return window&&(view==window||view.window==window);}
 - (BOOL)isVisibleInput:(UIView *)view {
@@ -391,8 +405,8 @@ static NSDictionary *DXBody(NSData *body) {
  }
  id target = nil; BOOL classTarget = NO;
  if ([identifier isKindOfClass:NSString.class]) {
-  target = [self.views objectForKey:identifier];
-  if (!target) { if (error) *error = @"对象 ID 已过期，请重新读取页面元素"; return nil; }
+  target = [self objectForIdentifier:identifier];
+  if (!target) { if (error) *error = @"对象 ID 已过期，请重新读取页面元素或重新获取实例"; return nil; }
  } else if ([className isKindOfClass:NSString.class] && className.length) {
   Class cls = NSClassFromString(className);
   if (!cls) { if (error) *error = [@"找不到类：" stringByAppendingString:className]; return nil; }
@@ -435,8 +449,10 @@ static NSDictionary *DXBody(NSData *body) {
  } else if (returnType[0] == '@') {
   __unsafe_unretained id objectValue = nil;
   [invocation getReturnValue:&objectValue];
-  result[@"returnValue"] = objectValue ? DXShort([objectValue description], 2000) : NSNull.null;
-  result[@"returnClass"] = objectValue ? NSStringFromClass([objectValue class]) : NSNull.null;
+  id strongValue = objectValue;
+  result[@"returnValue"] = strongValue ? DXShort([strongValue description], 2000) : NSNull.null;
+  result[@"returnClass"] = strongValue ? NSStringFromClass([strongValue class]) : NSNull.null;
+  result[@"returnId"] = strongValue ? [self registerObject:strongValue] : NSNull.null;
  } else if (returnType[0] == ':') {
   SEL returned = NULL; [invocation getReturnValue:&returned];
   result[@"returnValue"] = returned ? NSStringFromSelector(returned) : NSNull.null;
@@ -471,6 +487,66 @@ static NSDictionary *DXBody(NSData *body) {
   result[@"returnValue"] = [NSString stringWithFormat:@"无法序列化的返回类型 %@", typeName];
  }
  return result;
+}
+
+- (void)collectInstancesFromController:(UIViewController *)controller into:(NSMutableArray *)items depth:(NSUInteger)depth {
+ if(!controller||items.count>=200||depth>12)return;
+ [items addObject:controller];
+ [self collectInstancesFromController:controller.presentedViewController into:items depth:depth+1];
+ for(UIViewController *child in controller.childViewControllers)[self collectInstancesFromController:child into:items depth:depth+1];
+}
+
+- (NSDictionary *)findInstances:(NSDictionary *)arguments error:(NSString **)error {
+ NSString *name=arguments[@"class"];
+ if(![name isKindOfClass:NSString.class]||name.length<2||name.length>200){if(error)*error=@"class 参数应为 2–200 字符的类名";return nil;}
+ Class cls=NSClassFromString(name);
+ if(!cls){if(error)*error=[@"找不到类：" stringByAppendingString:name];return nil;}
+ id limitValue=arguments[@"limit"];
+ NSUInteger limit=[limitValue isKindOfClass:NSNumber.class]?MIN(MAX([limitValue integerValue],1),50):20;
+ UIApplication *app=UIApplication.sharedApplication;
+ NSMutableArray *candidates=[NSMutableArray new];
+ if(app)[candidates addObject:app];
+ if(app.delegate)[candidates addObject:app.delegate];
+ NSMutableArray *controllers=[NSMutableArray new];
+ for(UIWindow *window in app.windows){
+  [candidates addObject:window];
+  if(window.rootViewController)[self collectInstancesFromController:window.rootViewController into:controllers depth:0];
+ }
+ [candidates addObjectsFromArray:controllers];
+ NSUInteger scanned=0;NSMutableArray *stack=[NSMutableArray arrayWithArray:app.windows];
+ while(stack.count&&scanned<1500){
+  UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+  [candidates addObject:view];
+  [stack addObjectsFromArray:view.subviews];
+  UIResponder *next=view.nextResponder;
+  if([next isKindOfClass:UIViewController.class]&&![controllers containsObject:next])[candidates addObject:next];
+ }
+ NSMutableArray *rows=[NSMutableArray new];NSMutableSet *seen=[NSMutableSet new];
+ for(id object in candidates){
+  if(rows.count>=limit)break;
+  NSValue *key=[NSValue valueWithPointer:(__bridge const void *)object];
+  if([seen containsObject:key])continue;
+  [seen addObject:key];
+  if(![object isKindOfClass:cls])continue;
+  NSString *identifier=[self registerObject:object];
+  NSMutableDictionary *row=[@{@"id":identifier?:@"",@"class":DXClass(object),@"address":[NSString stringWithFormat:@"%p",object],@"description":DXShort([object description],240)} mutableCopy];
+  if([object isKindOfClass:UIView.class]){
+   UIView *view=(UIView *)object;
+   CGRect frame=view.window?[view convertRect:view.bounds toView:view.window]:view.bounds;
+   row[@"frame"]=NSStringFromCGRect(frame);
+   row[@"hidden"]=@(view.hidden);
+   row[@"alpha"]=@(view.alpha);
+   row[@"attached"]=@(view.window!=nil);
+   row[@"isWindow"]=@([view isKindOfClass:UIWindow.class]);
+  } else if([object isKindOfClass:UIViewController.class]){
+   UIViewController *controller=(UIViewController *)object;
+   if(controller.title)row[@"title"]=controller.title;
+   row[@"viewLoaded"]=@(controller.isViewLoaded);
+   row[@"presented"]=@(controller.presentingViewController!=nil);
+  }
+  [rows addObject:row];
+ }
+ return @{@"class":name,@"instances":rows,@"scanned":@(scanned),@"truncated":@(rows.count>=limit),@"scope":@"UIApplication、AppDelegate、窗口、视图层级与控制器树；非界面对象不做堆扫描"};
 }
 
 - (NSDictionary *)execute:(NSString *)operation arguments:(NSDictionary *)arguments error:(NSString **)error {
@@ -547,7 +623,7 @@ static NSDictionary *DXBody(NSData *body) {
   bar.text=query;id<UISearchBarDelegate> delegate=bar.delegate;if([delegate respondsToSelector:@selector(searchBar:textDidChange:)])[delegate searchBar:bar textDidChange:query];
   [bar resignFirstResponder];return @{@"searched":@YES,@"query":query,@"requeryRequired":@YES};
  }
- if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"hit_test",@"view_tree",@"object_info",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"cookies_list",@"sandbox_list",@"defaults_keys"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"sandbox_read",@"defaults_get",@"keychain_list",@"activate_control",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304},@"arbitraryMethodInvocation":@YES};
+ if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"hit_test",@"view_tree",@"object_info",@"find_instances",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"cookies_list",@"sandbox_list",@"defaults_keys"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"sandbox_read",@"defaults_get",@"keychain_list",@"activate_control",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304},@"arbitraryMethodInvocation":@YES};
  if ([operation isEqual:@"capture_screen"]) {
   BOOL flex=[arguments[@"surface"] isEqual:@"flex"];
   if(flex&&![self flexVisibleController]){if(error)*error=@"FLEX 功能页不可见，请先收起会话并打开工具页";return nil;}
@@ -597,10 +673,13 @@ static NSDictionary *DXBody(NSData *body) {
   return @{@"tree":tree,@"count":@(count),@"truncated":@(count>=120),@"selectedObject":[self objectInfo:self.selectedObject],@"selectedInTree":@(selectedInTree),@"selectedAncestors":selected?[self ancestorsForView:selected]:@[],@"selectedSiblings":selected?[self siblingsForView:selected]:@[],@"interactiveAncestor":selected?[self interactiveAncestorForView:selected]:@{@"available":@NO}};
  }
  if ([operation isEqual:@"select_object"] || [operation isEqual:@"object_info"]) {
-  id object=arguments[@"id"]?[self.views objectForKey:arguments[@"id"]]:self.selectedObject;
+  id object=arguments[@"id"]?[self objectForIdentifier:arguments[@"id"]]:self.selectedObject;
   if (!object) {if(error)*error=@"对象已释放或不在当前视图树中";return nil;}
   if ([operation isEqual:@"select_object"]) self.selectedObject=object;
-  return [self objectInfo:object];
+  NSMutableDictionary *info=[[self objectInfo:object] mutableCopy];
+  NSString *identifier=[self registerObject:object];
+  if(identifier)info[@"id"]=identifier;
+  return info;
  }
  if ([operation isEqual:@"class_search"]) {
   NSString *query=arguments[@"query"];if(![query isKindOfClass:NSString.class]||query.length<2||query.length>100){if(error)*error=@"类名查询长度应为 2–100";return nil;}
@@ -616,6 +695,7 @@ static NSDictionary *DXBody(NSData *body) {
   objc_property_t *props=class_copyPropertyList(cls,&count);for(unsigned int i=0;i<count&&i<100;i++)[properties addObject:[NSString stringWithUTF8String:property_getName(props[i])]];free(props);
   return @{@"class":name,@"superclass":class_getSuperclass(cls)?NSStringFromClass(class_getSuperclass(cls)):@"",@"methods":methods,@"properties":properties};
  }
+ if ([operation isEqual:@"find_instances"]) return [self findInstances:arguments error:error];
  if ([operation isEqual:@"runtime_images"]) {
   NSString *query=arguments[@"query"]?:@"";if(![query isKindOfClass:NSString.class]||query.length>100){if(error)*error=@"镜像查询无效";return nil;}
   unsigned int count=0;const char **images=objc_copyImageNames(&count);NSMutableArray *matches=[NSMutableArray new];
