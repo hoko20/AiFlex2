@@ -301,6 +301,8 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         if (indexPath.section == AXSectionUsage) {
             cell.textLabel.text = @"MCP 客户端";
             cell.textLabel.font = [UIFont systemFontOfSize:15];
+            cell.textLabel.textColor = UIColor.labelColor;
+            cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
             cell.detailTextLabel.text = @"在 Claude Desktop、Cursor、Cherry Studio 等客户端添加 Streamable HTTP 服务，URL 填上方访问地址；需要授权时在请求头加 Authorization: Bearer <访问令牌>。";
             return cell;
         }
@@ -334,7 +336,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
             cell.textLabel.text = @"现场报告";
             NSString *summary = [self reportSummary];
             cell.detailTextLabel.text = summary.length ? AXShortText(summary, 80) : @"暂无";
-            cell.detailTextLabel.numberOfLines = 3;
+            cell.detailTextLabel.numberOfLines = 2;
             cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
@@ -401,6 +403,13 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 }
 
 #pragma mark - Table delegate
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == AXSectionUsage) return 120;
+    if (indexPath.section == AXSectionTools) return 62;
+    if (indexPath.section == AXSectionContext && indexPath.row == 1) return 76;
+    return 48;
+}
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
