@@ -193,14 +193,14 @@ static NSString *LocalIPv4(void){
 }
 + (void)setControlEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"control"]];}
 + (BOOL)scriptEnabled{
-+ id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"script"]];
-+ return stored?[stored boolValue]:NO;
-+}
+ id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"script"]];
+ return stored?[stored boolValue]:NO;
+}
 + (void)setScriptEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"script"]];}
 + (BOOL)tracingEnabled{
-+ id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];
-+ return stored?[stored boolValue]:NO;
-+}
+ id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];
+ return stored?[stored boolValue]:NO;
+}
 + (void)setTracingEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];}
 + (NSString *)endpoint{return [NSString stringWithFormat:@"http://%@:%lu/mcp",LocalIPv4(),(unsigned long)[self port]];}
 + (NSString *)status{
