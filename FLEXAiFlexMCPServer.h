@@ -1,0 +1,25 @@
+#import <Foundation/Foundation.h>
+
+// Injected-app MCP endpoint. Runs inside the host process and reuses the FLEX
+// runtime; it never talks to any external desktop app. The bearer token and
+// each tool group are explicit grants stored for that host app.
+@interface FLEXAiFlexMCPServer : NSObject
++ (instancetype)shared;
++ (BOOL)isEnabled;
++ (void)setEnabled:(BOOL)enabled;
++ (NSUInteger)port;
++ (void)setPort:(NSUInteger)port;
++ (BOOL)authRequired;
++ (void)setAuthRequired:(BOOL)required;
++ (NSString *)token;
++ (BOOL)setToken:(NSString *)token;
++ (NSString *)rotateToken;
++ (BOOL)sensitiveEnabled;
++ (void)setSensitiveEnabled:(BOOL)enabled;
++ (BOOL)controlEnabled;
++ (void)setControlEnabled:(BOOL)enabled;
++ (NSString *)endpoint;
++ (NSString *)status;
+- (void)start;
+- (void)stop;
+@end

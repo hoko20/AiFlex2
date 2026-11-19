@@ -1,0 +1,49 @@
+name: Build AiFlex2
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: build-aiflex2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          brew install ldid xz
+          xcodebuild -version
+
+      - name: Install Theos
+        run: |
+          git clone --depth 1 https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+          git clone --depth 1 https://github.com/theos/dm.pl.git "$RUNNER_TEMP/theos/vendor/dm.pl"
+          chmod +x "$RUNNER_TEMP/theos/vendor/dm.pl/dm.pl"
+          THEOS="$RUNNER_TEMP/theos" "$RUNNER_TEMP/theos/bin/update-theos"
+          mkdir -p "$RUNNER_TEMP/theos/sdks"
+          ln -sfn "$(xcrun --sdk iphoneos --show-sdk-path)" "$RUNNER_TEMP/theos/sdks/iPhoneOS.sdk"
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/theos/vendor/dm.pl" >> "$GITHUB_PATH"
+
+      - name: Build AiFlex2
+        run: make clean package FINALPACKAGE=1 DEBUG=0 -j1
+
+      - name: List artifacts
+        run: |
+          ls -lh *.deb *.dylib
+
+      - name: Upload dylib and deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: AiFlex2
+          path: |
+            *.deb
+            *.dylib
+          if-no-files-found: error
