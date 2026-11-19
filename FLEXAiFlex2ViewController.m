@@ -269,7 +269,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == AXSectionPermissions) {
-        return @"授权保护开启时必须携带 Bearer 令牌；关闭后同一局域网内无需令牌即可连接，请仅在可信网络使用。敏感读取和界面控制分别对应独立授权组。";
+        return @"授权保护：开启后必须携带 Bearer 令牌；关闭后同局域网可直接连接，请仅在可信网络使用。\n敏感读取：允许头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n界面控制：允许点击、输入、滚动、手势和高亮；会真实改变 App 状态。\n脚本执行：允许在 WKWebView 中运行 JavaScript，只影响网页，但可能破坏页面状态。\n方法追踪：运行期替换指定方法并记录调用，可能导致崩溃或卡顿，默认关闭。";
     }
     if (section == AXSectionTools) {
         return @"工具组关闭后，对应工具不会出现在 MCP tools/list 中。";
@@ -281,8 +281,8 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     switch (section) {
         case AXSectionContext: return 3;
         case AXSectionActions: return 4;
-        case AXSectionPermissions: return 3;
-        case AXSectionTools: return 4;
+        case AXSectionPermissions: return 5;
+        case AXSectionTools: return [self toolRows].count;
         default: return 1;
     }
 }
@@ -363,28 +363,56 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     }
 
     // Permissions
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    NSArray *titles = @[@"授权保护", @"敏感读取", @"界面控制"];
-    cell.textLabel.text = titles[indexPath.row];
-    UISwitch *toggle = [UISwitch new];
-    toggle.tag = 900 + indexPath.row;
-    if (indexPath.row == 0) toggle.on = [FLEXAiFlexMCPServer authRequired];
-    else if (indexPath.row == 1) toggle.on = [FLEXAiFlexMCPServer sensitiveEnabled];
-    else toggle.on = [FLEXAiFlexMCPServer controlEnabled];
-    if (indexPath.row == 0 && ![FLEXAiFlexMCPServer isEnabled]) {
-        cell.textLabel.textColor = UIColor.secondaryLabelColor;
+    if (indexPath.section == AXSectionPermissions) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"permission"];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"permission"];
+        }
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.textLabel.font = [UIFont systemFontOfSize:16];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        cell.detailTextLabel.numberOfLines = 0;
+        NSArray *titles = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
+        NSArray *details = @[
+            @"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接",
+            @"头文件、日志/网络正文、文件搜索、截图、Keychain 元数据",
+            @"点击、输入、滚动、手势、方法调用与高亮，会改变 App 状态",
+            @"在 WKWebView 执行 JavaScript，可能改变网页状态",
+            @"替换方法实现并记录调用，高风险，10 分钟自动停止"
+        ];
+        cell.textLabel.text = titles[indexPath.row];
+        cell.detailTextLabel.text = details[indexPath.row];
+        UISwitch *toggle = [UISwitch new];
+        toggle.tag = 900 + indexPath.row;
+        if (indexPath.row == 0) toggle.on = [FLEXAiFlexMCPServer authRequired];
+        else if (indexPath.row == 1) toggle.on = [FLEXAiFlexMCPServer sensitiveEnabled];
+        else if (indexPath.row == 2) toggle.on = [FLEXAiFlexMCPServer controlEnabled];
+        else if (indexPath.row == 3) toggle.on = [FLEXAiFlexMCPServer scriptEnabled];
+        else toggle.on = [FLEXAiFlexMCPServer tracingEnabled];
+        if (indexPath.row == 0 && ![FLEXAiFlexMCPServer isEnabled]) {
+            cell.textLabel.textColor = UIColor.secondaryLabelColor;
+        } else if (indexPath.row >= 3 && toggle.on) {
+            cell.textLabel.textColor = UIColor.systemOrangeColor;
+        }
+        [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+        return cell;
     }
-    [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = toggle;
+
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
     return cell;
 }
 
 - (NSArray<NSDictionary *> *)toolRows {
     return @[
         @{@"name": @"aiflex_status", @"detail": @"读取注入 App、端点与工具组状态", @"enabled": @YES},
-        @{@"name": @"aiflex_read", @"detail": @"页面元素、视图树、对象、界面实例、网络与沙盒元数据", @"enabled": @YES},
-        @{@"name": @"aiflex_sensitive", @"detail": @"头文件、日志/网络正文、截图（需敏感读取授权）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
-        @{@"name": @"aiflex_control", @"detail": @"导航、输入、激活控件、调用方法与真实手势（需界面控制授权）", @"enabled": @([FLEXAiFlexMCPServer controlEnabled])}
+        @{@"name": @"aiflex_read", @"detail": @"元素/文字查找、对象属性、实例、网络搜索与快照（免授权）", @"enabled": @YES},
+        @{@"name": @"aiflex_sensitive", @"detail": @"头文件、日志搜索/网络正文、文件、截图（需敏感读取）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
+        @{@"name": @"aiflex_control", @"detail": @"按文字点击、高亮、输入、滚动、方法调用与手势（需界面控制）", @"enabled": @([FLEXAiFlexMCPServer controlEnabled])},
+        @{@"name": @"aiflex_script", @"detail": @"在 WKWebView 执行 JavaScript（需脚本执行，单独授权）", @"enabled": @([FLEXAiFlexMCPServer scriptEnabled])},
+        @{@"name": @"aiflex_trace", @"detail": @"方法调用追踪，高风险，10 分钟自动停止（需方法追踪）", @"enabled": @([FLEXAiFlexMCPServer tracingEnabled])}
     ];
 }
 
@@ -406,6 +434,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == AXSectionUsage) return 120;
+    if (indexPath.section == AXSectionPermissions) return 70;
     if (indexPath.section == AXSectionTools) return 62;
     if (indexPath.section == AXSectionContext && indexPath.row == 1) return 76;
     return 48;
@@ -435,8 +464,12 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         }
     } else if (row == 1) {
         [FLEXAiFlexMCPServer setSensitiveEnabled:sender.on];
-    } else {
+    } else if (row == 2) {
         [FLEXAiFlexMCPServer setControlEnabled:sender.on];
+    } else if (row == 3) {
+        [FLEXAiFlexMCPServer setScriptEnabled:sender.on];
+    } else if (row == 4) {
+        [FLEXAiFlexMCPServer setTracingEnabled:sender.on];
     }
     [self refresh];
 }

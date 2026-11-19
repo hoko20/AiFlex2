@@ -23,12 +23,12 @@
  return section==0?@"服务":section==1?@"授权":@"使用方式";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section{
- if(section==1)return @"授权保护开启时必须携带 Bearer 令牌；关闭后同一局域网内无需令牌即可连接，请仅在可信网络使用。自定义授权码支持 8–64 位字母、数字、点、下划线和短横线。";
+ if(section==1)return @"敏感读取：头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n界面控制：点击、输入、滚动、手势、高亮与方法调用，会真实改变 App 状态。\n脚本执行：在 WKWebView 运行 JavaScript，可能改变网页状态。\n方法追踪：运行期替换方法实现并记录调用，可能崩溃或卡顿，10 分钟自动停止。\n授权保护开启时必须携带 Bearer 令牌；关闭后同一局域网内无需令牌即可连接，请仅在可信网络使用。";
  if(section==2)return @"在电脑端 MCP 客户端（Claude Desktop、Cursor、Cherry Studio 等）添加 Streamable HTTP 服务，URL 填上方访问地址；开启授权保护时请求头加 Authorization: Bearer <访问令牌>。服务只在宿主 App 进程内运行，App 被挂起或杀死时连接会中断，重新打开 App 后自动恢复。HTTP 为明文，仅用于可信局域网。";
  return nil;
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section{
- return section==0?4:section==1?6:2;
+ return section==0?4:section==1?8:2;
 }
 - (UITableViewCell *)cell:(UITableView *)tableView{
  UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"cell"];
@@ -47,7 +47,7 @@
   else cell.detailTextLabel.text=[FLEXAiFlexMCPServer status];
  }
  else if(indexPath.section==1){
-  cell.textLabel.text=@[@"授权保护",@"访问令牌",@"自定义授权码",@"重新生成令牌",@"敏感读取",@"界面控制"][indexPath.row];
+  cell.textLabel.text=@[@"授权保护",@"访问令牌",@"自定义授权码",@"重新生成令牌",@"敏感读取",@"界面控制",@"脚本执行",@"方法追踪"][indexPath.row];
   if(indexPath.row==0){UISwitch *toggle=[UISwitch new];toggle.on=[FLEXAiFlexMCPServer authRequired];toggle.tag=820;[toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;}
   else if(indexPath.row<=3){
    if(![FLEXAiFlexMCPServer authRequired])cell.textLabel.textColor=UIColor.secondaryLabelColor;
@@ -55,12 +55,14 @@
    else if(indexPath.row==2)cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
    else if([FLEXAiFlexMCPServer authRequired])cell.textLabel.textColor=UIColor.systemRedColor;
   }
-  else{UISwitch *toggle=[UISwitch new];toggle.on=indexPath.row==4?[FLEXAiFlexMCPServer sensitiveEnabled]:[FLEXAiFlexMCPServer controlEnabled];toggle.tag=821+indexPath.row-4;[toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;}
+  else{UISwitch *toggle=[UISwitch new];
+   BOOL on=indexPath.row==4?[FLEXAiFlexMCPServer sensitiveEnabled]:indexPath.row==5?[FLEXAiFlexMCPServer controlEnabled]:indexPath.row==6?[FLEXAiFlexMCPServer scriptEnabled]:[FLEXAiFlexMCPServer tracingEnabled];
+   toggle.on=on;toggle.tag=821+indexPath.row-4;[toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;}
  }
  else{
   if(indexPath.row==0){cell.textLabel.text=@"复制 MCP 客户端配置";cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}
   else{
-   cell.textLabel.text=@"工具：aiflex_status / read / sensitive / control";
+   cell.textLabel.text=@"工具：status / read / sensitive / control / script / trace";
    cell.textLabel.font=[UIFont systemFontOfSize:12];
    cell.textLabel.numberOfLines=0;cell.textLabel.textColor=UIColor.secondaryLabelColor;
    cell.selectionStyle=UITableViewCellSelectionStyleNone;
@@ -135,7 +137,9 @@
 - (void)toggleGroup:(UISwitch *)sender{
  if(sender.tag==820){[FLEXAiFlexMCPServer setAuthRequired:sender.on];[self reloadSoon];return;}
  if(sender.tag==821)[FLEXAiFlexMCPServer setSensitiveEnabled:sender.on];
- else [FLEXAiFlexMCPServer setControlEnabled:sender.on];
+ else if(sender.tag==822)[FLEXAiFlexMCPServer setControlEnabled:sender.on];
+ else if(sender.tag==823)[FLEXAiFlexMCPServer setScriptEnabled:sender.on];
+ else [FLEXAiFlexMCPServer setTracingEnabled:sender.on];
  [self reloadSoon];
 }
 - (void)toast:(NSString *)text{

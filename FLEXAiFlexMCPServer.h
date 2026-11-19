@@ -18,6 +18,10 @@
 + (void)setSensitiveEnabled:(BOOL)enabled;
 + (BOOL)controlEnabled;
 + (void)setControlEnabled:(BOOL)enabled;
++ (BOOL)scriptEnabled;
++ (void)setScriptEnabled:(BOOL)enabled;
++ (BOOL)tracingEnabled;
++ (void)setTracingEnabled:(BOOL)enabled;
 + (NSString *)endpoint;
 + (NSString *)status;
 - (void)start;

@@ -11,5 +11,8 @@
 - (NSArray<NSDictionary *> *)toolCatalog;
 - (UIViewController *)controllerForTool:(NSString *)identifier error:(NSString **)error;
 - (void)performGesture:(NSDictionary *)arguments completion:(void (^)(NSDictionary *,NSString *))completion;
+- (void)performTapText:(NSDictionary *)arguments completion:(void (^)(NSDictionary *,NSString *))completion;
+- (void)runJavaScript:(NSDictionary *)arguments completion:(void (^)(NSDictionary *,NSString *))completion;
+- (NSDictionary *)traceOperation:(NSString *)action arguments:(NSDictionary *)arguments error:(NSString **)error;
 - (void)cancelPendingInput;
 @end

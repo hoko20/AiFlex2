@@ -12,6 +12,13 @@
 #import "x/ClassDump/UCClassDumpTool.h"
 #import <objc/runtime.h>
 #import <math.h>
+#include <string.h>
+
+// Declared locally so the dylib does not hard-link WebKit; the class is looked
+// up at runtime and the call is only made when a WKWebView is present.
+@interface NSObject (AiFlexJavaScript)
+- (void)evaluateJavaScript:(NSString *)javaScriptString completionHandler:(void (^)(id result, NSError *error))completionHandler;
+@end
 
 @interface FLEXGlobalsViewController (DXAgentEntries)
 + (FLEXGlobalsEntry *)globalsEntryForRow:(FLEXGlobalsRow)row;
@@ -34,6 +41,11 @@ static NSDictionary *DXBody(NSData *body) {
 @property NSMapTable<UIView *, NSString *> *viewIDs;
 @property NSMapTable<NSString *, id> *objects;
 @property NSMapTable<id, NSString *> *objectIDs;
+@property NSMutableArray<NSDictionary *> *snapshots;
+@property NSMutableArray<NSDictionary *> *traceRecords;
+@property NSMutableDictionary<NSString *, NSDictionary *> *traceHooks;
+@property NSUInteger traceDropped;
+@property NSUInteger traceGeneration;
 @property NSDictionary *undoState;
 @property NSTimeInterval lastCaptureAt;
 @property FLEXAiFlexTouchDriver *touchDriver;
@@ -127,7 +139,7 @@ static NSDictionary *DXBody(NSData *body) {
   });
  }];
 }
-- (instancetype)init { if ((self=[super init])) { _views=[NSMapTable strongToWeakObjectsMapTable]; _viewIDs=[NSMapTable weakToStrongObjectsMapTable]; _objects=[NSMapTable strongToWeakObjectsMapTable]; _objectIDs=[NSMapTable weakToStrongObjectsMapTable]; } return self; }
+- (instancetype)init { if ((self=[super init])) { _views=[NSMapTable strongToWeakObjectsMapTable]; _viewIDs=[NSMapTable weakToStrongObjectsMapTable]; _objects=[NSMapTable strongToWeakObjectsMapTable]; _objectIDs=[NSMapTable weakToStrongObjectsMapTable]; _snapshots=[NSMutableArray new]; _traceRecords=[NSMutableArray new]; _traceHooks=[NSMutableDictionary new]; } return self; }
 - (BOOL)isTargetWindow:(UIWindow *)window {
  if(!window||window.hidden||window.alpha<.01||window==FLEXManager.sharedManager.explorerWindow)return NO;
  for(NSString *name in @[@"FLEXWindow",@"FLEXDoKitFloatingWindow"]){Class cls=NSClassFromString(name);if(cls&&[window isKindOfClass:cls])return NO;}
@@ -185,8 +197,16 @@ static NSDictionary *DXBody(NSData *body) {
  }
  for(UIView *child in view.subviews){if(*scanned>=1500)break;[self screenElementsInView:child window:window items:items scanned:scanned];}
 }
-- (NSDictionary *)captureWindow:(UIWindow *)window error:(NSString **)error {
+- (NSDictionary *)captureWindow:(UIWindow *)window rect:(NSString *)rectText error:(NSString **)error {
  if(!window || window.hidden || CGRectIsEmpty(window.bounds)){if(error)*error=@"目标 App 当前没有可截图的窗口";return nil;}
+ CGRect crop=CGRectNull;
+ if([rectText isKindOfClass:NSString.class]&&rectText.length){
+  NSArray *parts=[rectText componentsSeparatedByString:@","];
+  if(parts.count!=4){if(error)*error=@"rect 格式应为 \"x,y,w,h\"（窗口坐标，单位 point）";return nil;}
+  crop=CGRectMake([parts[0] doubleValue],[parts[1] doubleValue],[parts[2] doubleValue],[parts[3] doubleValue]);
+  crop=CGRectIntersection(window.bounds,crop);
+  if(CGRectIsNull(crop)||CGRectIsEmpty(crop)||!isfinite(crop.size.width)||!isfinite(crop.size.height)){if(error)*error=@"rect 必须位于当前窗口内且宽高大于 0";return nil;}
+ }
  NSTimeInterval now=NSDate.date.timeIntervalSince1970;
  if(now-self.lastCaptureAt<2){if(error)*error=@"截图过于频繁，请稍后重试";return nil;}
  self.lastCaptureAt=now;
@@ -200,9 +220,18 @@ static NSDictionary *DXBody(NSData *body) {
   BOOL drawn=[window drawViewHierarchyInRect:window.bounds afterScreenUpdates:NO];
   UIImage *image=UIGraphicsGetImageFromCurrentImageContext();UIGraphicsEndImageContext();
   if(!drawn || !image){if(error)*error=@"目标窗口截图失败，可能是受保护或不可渲染内容";return nil;}
+  if(!CGRectIsNull(crop)){
+   if(!image.CGImage){if(error)*error=@"截图裁剪失败：没有可用的位图";return nil;}
+   CGRect pixelRect=CGRectMake(round(CGRectGetMinX(crop)*scale),round(CGRectGetMinY(crop)*scale),round(CGRectGetWidth(crop)*scale),round(CGRectGetHeight(crop)*scale));
+   CGImageRef cropped=CGImageCreateWithImageInRect(image.CGImage,pixelRect);
+   if(!cropped){if(error)*error=@"截图裁剪失败";return nil;}
+   image=[UIImage imageWithCGImage:cropped scale:1 orientation:image.imageOrientation];CGImageRelease(cropped);
+  }
+  NSInteger width=image.CGImage?CGImageGetWidth(image.CGImage):(NSInteger)size.width;
+  NSInteger height=image.CGImage?CGImageGetHeight(image.CGImage):(NSInteger)size.height;
   for(CGFloat quality=0.72;quality>=0.35;quality-=0.12){
    NSData *jpeg=UIImageJPEGRepresentation(image,quality);
-   if(jpeg.length>0&&jpeg.length<=120*1024)return @{@"imageBase64":[jpeg base64EncodedStringWithOptions:0],@"mime":@"image/jpeg",@"pixelWidth":@((NSInteger)size.width),@"pixelHeight":@((NSInteger)size.height),@"windowBounds":NSStringFromCGRect(window.bounds),@"capturedAt":@(NSDate.date.timeIntervalSince1970),@"bytes":@(jpeg.length),@"scope":@"target_app_window"};
+   if(jpeg.length>0&&jpeg.length<=120*1024)return @{@"imageBase64":[jpeg base64EncodedStringWithOptions:0],@"mime":@"image/jpeg",@"pixelWidth":@(width),@"pixelHeight":@(height),@"windowBounds":NSStringFromCGRect(window.bounds),@"capturedAt":@(NSDate.date.timeIntervalSince1970),@"bytes":@(jpeg.length),@"scope":@"target_app_window",@"cropped":@(!CGRectIsNull(crop))};
   }
   scale*=0.72;
  }
@@ -549,6 +578,376 @@ static NSDictionary *DXBody(NSData *body) {
  return @{@"class":name,@"instances":rows,@"scanned":@(scanned),@"truncated":@(rows.count>=limit),@"scope":@"UIApplication、AppDelegate、窗口、视图层级与控制器树；非界面对象不做堆扫描"};
 }
 
+- (NSString *)searchableTextForView:(UIView *)view {
+ NSMutableArray *parts=[NSMutableArray new];
+ if(view.accessibilityLabel.length)[parts addObject:view.accessibilityLabel];
+ if(view.accessibilityIdentifier.length)[parts addObject:view.accessibilityIdentifier];
+ if([view isKindOfClass:UILabel.class]){NSString *text=((UILabel *)view).text;if(text.length)[parts addObject:text];}
+ else if([view isKindOfClass:UIButton.class]){NSString *text=((UIButton *)view).currentTitle;if(text.length)[parts addObject:text];}
+ else if([view isKindOfClass:UITextField.class]){UITextField *field=(id)view;if(field.text.length)[parts addObject:field.text];if(field.placeholder.length)[parts addObject:field.placeholder];}
+ else if([view isKindOfClass:UITextView.class]){NSString *text=((UITextView *)view).text;if(text.length)[parts addObject:text];}
+ else if([view isKindOfClass:UISearchBar.class]){NSString *text=((UISearchBar *)view).text;if(text.length)[parts addObject:text];}
+ return [parts componentsJoinedByString:@" · "];
+}
+- (BOOL)isInteractiveView:(UIView *)view {
+ if([view isKindOfClass:UIControl.class]||[view isKindOfClass:UIScrollView.class]||(view.accessibilityTraits&UIAccessibilityTraitButton)!=0)return YES;
+ for(UIGestureRecognizer *gesture in view.gestureRecognizers)if([gesture isKindOfClass:UITapGestureRecognizer.class])return YES;
+ return NO;
+}
+- (NSDictionary *)findText:(NSDictionary *)arguments error:(NSString **)error {
+ NSString *query=arguments[@"query"];
+ if(![query isKindOfClass:NSString.class]||query.length==0||query.length>200){if(error)*error=@"query 应为 1–200 字符的文本";return nil;}
+ BOOL exact=[arguments[@"exact"] boolValue];
+ id limitValue=arguments[@"limit"];
+ NSUInteger limit=[limitValue isKindOfClass:NSNumber.class]?MIN(MAX([limitValue integerValue],1),50):20;
+ UIWindow *window=[self window];if(!window){if(error)*error=@"当前没有可见窗口";return nil;}
+ NSMutableArray *matches=[NSMutableArray new];NSMutableArray *stack=[NSMutableArray arrayWithObject:window];NSUInteger scanned=0;
+ while(stack.count&&scanned<1500&&matches.count<limit){
+  UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+  if(!view||view.hidden||view.alpha<0.01)continue;
+  [stack addObjectsFromArray:view.subviews];
+  NSString *text=[self searchableTextForView:view];if(!text.length)continue;
+  BOOL hit=exact?[text isEqualToString:query]:([text rangeOfString:query options:NSCaseInsensitiveSearch].location!=NSNotFound);
+  if(!hit)continue;
+  CGRect frame=[view convertRect:view.bounds toView:window];if(CGRectIsEmpty(frame))continue;
+  [matches addObject:@{@"id":[self registerView:view],@"class":DXClass(view),@"text":DXShort(text,200),@"frame":NSStringFromCGRect(frame),@"interactive":@([self isInteractiveView:view]),@"center":@{@"x":@(CGRectGetMidX(frame)),@"y":@(CGRectGetMidY(frame))}}];
+ }
+ return @{@"query":query,@"matches":matches,@"scanned":@(scanned),@"truncated":@(matches.count>=limit)};
+}
+- (NSDictionary *)screenTexts:(NSDictionary *)arguments error:(NSString **)error {
+ id limitValue=arguments[@"limit"];
+ NSUInteger limit=[limitValue isKindOfClass:NSNumber.class]?MIN(MAX([limitValue integerValue],1),200):120;
+ UIWindow *window=[self window];if(!window){if(error)*error=@"当前没有可见窗口";return nil;}
+ NSMutableArray *rows=[NSMutableArray new];NSMutableArray *stack=[NSMutableArray arrayWithObject:window];NSUInteger scanned=0;
+ while(stack.count&&scanned<1500&&rows.count<limit){
+  UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+  if(!view||view.hidden||view.alpha<0.01)continue;
+  [stack addObjectsFromArray:view.subviews];
+  NSString *text=[self searchableTextForView:view];if(!text.length)continue;
+  [rows addObject:@{@"id":[self registerView:view],@"class":DXClass(view),@"text":DXShort(text,200)}];
+ }
+ return @{@"texts":rows,@"scanned":@(scanned),@"truncated":@(rows.count>=limit)};
+}
+- (NSString *)primitiveValueForType:(const char *)type pointer:(const void *)pointer {
+ if(!type||!pointer)return nil;
+ switch(type[0]){
+  case 'c':{char v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%d",v];}
+  case 'C':{unsigned char v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%u",v];}
+  case 'B':{bool v=false;memcpy(&v,pointer,sizeof(v));return v?@"true":@"false";}
+  case 's':{short v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%d",v];}
+  case 'S':{unsigned short v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%u",v];}
+  case 'i':{int v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%d",v];}
+  case 'I':{unsigned int v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%u",v];}
+  case 'l':{long v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%ld",v];}
+  case 'L':{unsigned long v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%lu",v];}
+  case 'q':{long long v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%lld",v];}
+  case 'Q':{unsigned long long v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%llu",v];}
+  case 'f':{float v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%g",v];}
+  case 'd':{double v=0;memcpy(&v,pointer,sizeof(v));return [NSString stringWithFormat:@"%g",v];}
+  default:return nil;
+ }
+}
+- (NSDictionary *)objectProperties:(NSDictionary *)arguments error:(NSString **)error {
+ id object=arguments[@"id"]?[self objectForIdentifier:arguments[@"id"]]:self.selectedObject;
+ if(!object){if(error)*error=@"对象已释放或没有被选中";return nil;}
+ BOOL tagged=(((uintptr_t)(__bridge const void *)object)&1)!=0;
+ NSMutableArray *rows=[NSMutableArray new];unsigned int count=0;Ivar *ivars=class_copyIvarList([object class],&count);
+ for(unsigned int i=0;i<count&&rows.count<60;i++){
+  Ivar ivar=ivars[i];const char *name=ivar_getName(ivar);const char *type=ivar_getTypeEncoding(ivar);if(!name||!type)continue;
+  NSMutableDictionary *row=[@{@"name":[NSString stringWithUTF8String:name]?:@"?",@"type":[NSString stringWithUTF8String:type]?:@"?"} mutableCopy];
+  @try{
+   if(type[0]=='@'){
+    if(type[1]=='?'){row[@"value"]=@"<block>";}
+    else{
+     id value=object_getIvar(object,ivar);
+     row[@"value"]=value?DXShort([value description],300):@"nil";
+     if(value){row[@"class"]=DXClass(value);NSString *identifier=[self registerObject:value];if(identifier)row[@"valueId"]=identifier;}
+    }
+   } else if(tagged){
+    row[@"value"]=@"<tagged pointer>";
+   } else {
+    NSString *value=[self primitiveValueForType:type pointer:(const char *)(__bridge const void *)object+ivar_getOffset(ivar)];
+    row[@"value"]=value?:@"<unsupported>";
+   }
+  }@catch(NSException *exception){row[@"value"]=@"<read failed>";}
+  [rows addObject:row];
+ }
+ free(ivars);
+ NSString *identifier=[self registerObject:object];
+ return @{@"id":identifier?:@"",@"class":DXClass(object),@"ivars":rows,@"truncated":@(rows.count>=60),@"note":@"只读取 ivar，不调用 getter"};
+}
+- (NSMutableDictionary *)networkRowForTransaction:(FLEXHTTPTransaction *)item detail:(BOOL)detail {
+ NSURL *url=item.request.URL;NSMutableDictionary *row=[@{@"id":item.requestID?:@"",@"host":url.host?:@"",@"path":DXShort(url.path,240),@"method":item.request.HTTPMethod?:@"GET",@"state":@(item.state),@"receivedBytes":@(item.receivedDataLength),@"startedAt":@(item.startTime.timeIntervalSince1970)} mutableCopy];
+ if([item.response isKindOfClass:NSHTTPURLResponse.class])row[@"status"]=@(((NSHTTPURLResponse *)item.response).statusCode);
+ if(detail){
+  row[@"url"]=DXShort(url.absoluteString,2048);
+  row[@"requestContentType"]=DXShort([item.request valueForHTTPHeaderField:@"Content-Type"],120);
+  row[@"responseContentType"]=DXShort(item.response.MIMEType,120);
+  row[@"requestBody"]=DXBody(item.cachedRequestBody);
+  row[@"responseBody"]=DXBody([FLEXNetworkRecorder.defaultRecorder cachedResponseBodyForTransaction:item]);
+ }
+ return row;
+}
+- (NSDictionary *)networkSearch:(NSDictionary *)arguments error:(NSString **)error {
+ NSString *query=arguments[@"query"],*host=arguments[@"host"],*method=arguments[@"method"];id status=arguments[@"status"];
+ id limitValue=arguments[@"limit"];
+ NSUInteger limit=[limitValue isKindOfClass:NSNumber.class]?MIN(MAX([limitValue integerValue],1),50):20;
+ NSArray<FLEXHTTPTransaction *> *items=FLEXNetworkRecorder.defaultRecorder.HTTPTransactions;NSMutableArray *rows=[NSMutableArray new];
+ for(FLEXHTTPTransaction *item in items){
+  NSMutableDictionary *row=[self networkRowForTransaction:item detail:NO];
+  if(query.length&&[row[@"path"] rangeOfString:query options:NSCaseInsensitiveSearch].location==NSNotFound&&[row[@"host"] rangeOfString:query options:NSCaseInsensitiveSearch].location==NSNotFound)continue;
+  if(host.length&&[row[@"host"] rangeOfString:host options:NSCaseInsensitiveSearch].location==NSNotFound)continue;
+  if(method.length&&![row[@"method"] isEqualToString:method.uppercaseString])continue;
+  if([status isKindOfClass:NSNumber.class]&&[row[@"status"] integerValue]!=[status integerValue])continue;
+  [rows addObject:row];if(rows.count>=limit)break;
+ }
+ return @{@"transactions":rows,@"truncated":@(rows.count>=limit),@"recordingEnabled":@(FLEXNetworkObserver.isEnabled)};
+}
+- (NSDictionary *)sandboxGrep:(NSDictionary *)arguments error:(NSString **)error {
+ NSString *relative=arguments[@"path"],*query=arguments[@"query"];
+ if(![query isKindOfClass:NSString.class]||query.length==0||query.length>200){if(error)*error=@"query 应为 1–200 字符";return nil;}
+ NSString *path=[self safePath:relative directory:NO];if(!path){if(error)*error=@"文件不存在或不在当前 App 沙盒内";return nil;}
+ id limitValue=arguments[@"limit"];
+ NSUInteger limit=[limitValue isKindOfClass:NSNumber.class]?MIN(MAX([limitValue integerValue],1),200):50;
+ BOOL caseSensitive=[arguments[@"case_sensitive"] boolValue];
+ NSUInteger chunk=8*1024*1024;NSFileHandle *file=[NSFileHandle fileHandleForReadingAtPath:path];
+ if(!file){if(error)*error=@"文件无法打开";return nil;}
+ NSData *data=nil;@try{data=[file readDataOfLength:chunk];[file closeFile];}@catch(NSException *exception){[file closeFile];if(error)*error=@"文件读取失败";return nil;}
+ NSString *text=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];
+ if(!text){if(error)*error=@"该文件不是 UTF-8 文本，无法搜索";return nil;}
+ NSArray *lines=[text componentsSeparatedByString:@"\n"];NSMutableArray *matches=[NSMutableArray new];
+ NSStringCompareOptions options=caseSensitive?0:NSCaseInsensitiveSearch;
+ for(NSUInteger i=0;i<lines.count&&matches.count<limit;i++){
+  NSString *line=lines[i];if([line rangeOfString:query options:options].location==NSNotFound)continue;
+  [matches addObject:@{@"line":@(i+1),@"text":DXShort(line,400)}];
+ }
+ unsigned long long fileBytes=[[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileSize] unsignedLongLongValue];
+ return @{@"path":relative,@"query":query,@"matches":matches,@"scannedBytes":@(data.length),@"fileBytes":@(fileBytes),@"truncatedFile":@(fileBytes>data.length),@"truncatedMatches":@(matches.count>=limit)};
+}
+- (NSDictionary *)networkExport:(NSDictionary *)arguments error:(NSString **)error {
+ NSArray<FLEXHTTPTransaction *> *items=FLEXNetworkRecorder.defaultRecorder.HTTPTransactions;
+ if(!items.count){if(error)*error=@"当前没有网络记录可导出";return nil;}
+ NSMutableArray *entries=[NSMutableArray new];
+ for(FLEXHTTPTransaction *item in items){[entries addObject:[self networkRowForTransaction:item detail:YES]];}
+ NSDictionary *payload=@{@"creator":@"AiFlex2",@"exportedAt":@(NSDate.date.timeIntervalSince1970),@"bundleID":NSBundle.mainBundle.bundleIdentifier?:@"",@"entries":entries};
+ NSData *json=[NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+ if(!json){if(error)*error=@"网络记录无法序列化";return nil;}
+ NSString *directory=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/AiFlex2"];
+ if(![NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil]){if(error)*error=@"无法创建导出目录";return nil;}
+ NSString *name=[NSString stringWithFormat:@"network-%.0f.json",NSDate.date.timeIntervalSince1970*1000];
+ NSString *path=[directory stringByAppendingPathComponent:name];NSString *relative=[@"Documents/AiFlex2" stringByAppendingPathComponent:name];
+ if(![json writeToFile:path atomically:YES]){if(error)*error=@"导出文件写入失败";return nil;}
+ return @{@"path":relative,@"entries":@(entries.count),@"bytes":@(json.length)};
+}
+- (NSDictionary *)captureSnapshot {
+ UIWindow *window=[self window];NSMutableArray *path=[NSMutableArray new];
+ UIViewController *controller=window?[self visibleControllerInWindow:window path:path]:nil;
+ NSMutableArray *texts=[NSMutableArray new];NSUInteger scanned=0;
+ if(window)[self collectScreenTexts:window window:window items:texts scanned:&scanned];
+ NSMutableArray *elements=[NSMutableArray new];NSUInteger elementScanned=0;NSMutableArray *items=[NSMutableArray new];
+ if(window)[self screenElementsInView:window window:window items:items scanned:&elementScanned];
+ for(NSDictionary *item in items){if(elements.count>=80)break;[elements addObject:[NSString stringWithFormat:@"%@|%@|%@",item[@"class"]?:@"",item[@"label"]?:@"",item[@"frame"]?:@""]];}
+ return @{@"time":@(NSDate.date.timeIntervalSince1970),@"controller":DXClass(controller),@"controllerPath":path?:@[],@"texts":texts?:@[],@"elements":elements};
+}
+- (NSDictionary *)snapshot:(NSDictionary *)arguments error:(NSString **)error {
+ NSString *action=arguments[@"action"]?:@"save";
+ if([action isEqualToString:@"clear"]){@synchronized(self){[self.snapshots removeAllObjects];}return @{@"cleared":@YES,@"count":@0};}
+ if([action isEqualToString:@"save"]){
+  NSDictionary *snapshot=[self captureSnapshot];@synchronized(self){[self.snapshots addObject:snapshot];while(self.snapshots.count>5)[self.snapshots removeObjectAtIndex:0];}
+  return @{@"saved":@YES,@"count":@(self.snapshots.count),@"controller":snapshot[@"controller"],@"texts":@(((NSArray *)snapshot[@"texts"]).count),@"elements":@(((NSArray *)snapshot[@"elements"]).count)};
+ }
+ if([action isEqualToString:@"diff"]){
+  NSDictionary *before=nil,*after=nil;@synchronized(self){if(self.snapshots.count>=2){before=self.snapshots[self.snapshots.count-2];after=self.snapshots.lastObject;}}
+  if(!before){if(error)*error=@"至少需要两次 snapshot save 才能对比";return nil;}
+  NSSet *oldTexts=[NSSet setWithArray:before[@"texts"]];NSSet *newTexts=[NSSet setWithArray:after[@"texts"]];
+  NSMutableSet *added=[newTexts mutableCopy];[added minusSet:oldTexts];
+  NSMutableSet *removed=[oldTexts mutableCopy];[removed minusSet:newTexts];
+  NSArray *oldElements=before[@"elements"],*newElements=after[@"elements"];
+  return @{@"controllerBefore":before[@"controller"],@"controllerAfter":after[@"controller"],@"controllerChanged":@(![before[@"controller"] isEqual:after[@"controller"]]),@"addedTexts":added.allObjects,@"removedTexts":removed.allObjects,@"elementsBefore":@(oldElements.count),@"elementsAfter":@(newElements.count),@"elementsDelta":@((NSInteger)newElements.count-(NSInteger)oldElements.count)};
+ }
+ if(error)*error=@"action 仅支持 save / diff / clear";return nil;
+}
+- (NSDictionary *)highlightElement:(NSDictionary *)arguments error:(NSString **)error {
+ NSString *identifier=arguments[@"id"];UIView *view=[identifier isKindOfClass:NSString.class]?[self.views objectForKey:identifier]:nil;
+ if(!view&&![identifier isKindOfClass:NSString.class])view=[self.selectedObject isKindOfClass:UIView.class]?self.selectedObject:nil;
+ if(!view||![self isAttached:view]){if(error)*error=@"视图 ID 已过期或已离开当前页面";return nil;}
+ id durationValue=arguments[@"duration"];NSTimeInterval duration=[durationValue isKindOfClass:NSNumber.class]?MIN(MAX([durationValue doubleValue],0.5),10):2;
+ UIWindow *window=[self window];if(!window){if(error)*error=@"当前没有可见窗口";return nil;}
+ const NSInteger tag=0x41F1E1;
+ [[window viewWithTag:tag] removeFromSuperview];
+ CGRect frame=[view convertRect:view.bounds toView:window];
+ UIView *overlay=[UIView new];overlay.tag=tag;overlay.frame=frame;overlay.userInteractionEnabled=NO;
+ overlay.layer.borderColor=UIColor.systemRedColor.CGColor;overlay.layer.borderWidth=2;
+ overlay.backgroundColor=[UIColor.systemRedColor colorWithAlphaComponent:0.12];
+ [window addSubview:overlay];[window bringSubviewToFront:overlay];
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(duration*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[overlay removeFromSuperview];});
+ return @{@"highlighted":@YES,@"id":identifier?:@"",@"frame":NSStringFromCGRect(frame),@"duration":@(duration)};
+}
+- (void)performTapText:(NSDictionary *)arguments completion:(void (^)(NSDictionary *, NSString *))completion {
+ NSString *query=arguments[@"query"];
+ if(![query isKindOfClass:NSString.class]||query.length==0||query.length>200){completion(nil,@"query 应为 1–200 字符的文本");return;}
+ id indexValue=arguments[@"index"];NSUInteger index=[indexValue isKindOfClass:NSNumber.class]?MIN([indexValue integerValue],9):0;
+ NSString *error=nil;NSDictionary *found=[self findText:arguments error:&error];
+ if(!found){completion(nil,error);return;}
+ NSArray *matches=found[@"matches"];if(index>=matches.count){completion(nil,@"没有找到匹配该文本的可见元素，或 index 超出范围");return;}
+ NSDictionary *match=matches[index];UIView *view=[self.views objectForKey:match[@"id"]];
+ if(!view){completion(nil,@"匹配元素已失效，请重新查找");return;}
+ BOOL activated=NO;
+ if([view isKindOfClass:UIButton.class]&&[self isAttached:view]&&!view.hidden&&view.alpha>=0.01&&((UIControl *)view).enabled){
+  [(UIButton *)view sendActionsForControlEvents:UIControlEventTouchUpInside];activated=YES;
+  completion(@{@"tapped":@YES,@"method":@"activate_control",@"id":match[@"id"],@"text":match[@"text"],@"requeryRequired":@YES},nil);return;
+ }
+ if(!FLEXManager.sharedManager.isHidden){completion(nil,@"FLEX 覆盖层仍可见，请先 minimize_chat(surface=target) 后重试");return;}
+ if(!self.touchDriver)self.touchDriver=[FLEXAiFlexTouchDriver new];
+ if(self.touchDriver.running){completion(nil,@"另一个触摸序列仍在进行");return;}
+ CGPoint center=CGPointMake([match[@"center"][@"x"] doubleValue],[match[@"center"][@"y"] doubleValue]);
+ NSArray *path=@[[NSValue valueWithCGPoint:center],[NSValue valueWithCGPoint:center]];
+ [self.touchDriver performPaths:@[path] window:[self window] duration:.08 completion:^(NSDictionary *result,NSString *touchError){
+  if(touchError){completion(nil,touchError);return;}
+  completion(@{@"tapped":@YES,@"method":@"gesture",@"id":match[@"id"],@"text":match[@"text"],@"delivery":result?:@{},@"requeryRequired":@YES},nil);
+ }];
+ (void)activated;
+}
+- (UIView *)webViewInWindow:(UIWindow *)window preferred:(NSString *)identifier {
+ if([identifier isKindOfClass:NSString.class]){
+  id object=[self objectForIdentifier:identifier];
+  if([object isKindOfClass:UIView.class])return object;
+ }
+ if(!window)return nil;
+ NSMutableArray *stack=[NSMutableArray arrayWithObject:window];NSUInteger scanned=0;
+ while(stack.count&&scanned<1500){
+  UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+  NSString *name=NSStringFromClass([view class]);
+  if([name containsString:@"WKWebView"]||[name containsString:@"UIWebView"])return view;
+  [stack addObjectsFromArray:view.subviews];
+ }
+ return nil;
+}
+- (void)runJavaScript:(NSDictionary *)arguments completion:(void (^)(NSDictionary *, NSString *))completion {
+ NSString *code=arguments[@"code"];
+ if(![code isKindOfClass:NSString.class]||code.length==0||code.length>20000){completion(nil,@"code 应为 1–20000 字符的 JavaScript");return;}
+ UIWindow *window=[self window];UIView *webView=[self webViewInWindow:window preferred:arguments[@"id"]];
+ if(!webView){completion(nil,@"当前页面没有可执行脚本的 WKWebView/UIWebView");return;}
+ if(![webView respondsToSelector:@selector(evaluateJavaScript:completionHandler:)]){completion(nil,@"该 WebView 不支持 evaluateJavaScript");return;}
+ __block BOOL finished=NO;NSTimeInterval started=NSDate.date.timeIntervalSince1970;
+ void (^finish)(NSDictionary *,NSString *)=^(NSDictionary *result,NSString *error){
+  if(finished)return;finished=YES;completion(result,error);
+ };
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(15*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  finish(nil,@"JavaScript 执行超时（15 秒）");
+ });
+ [webView evaluateJavaScript:code completionHandler:^(id result,NSError *error){
+  if(error){finish(nil,[NSString stringWithFormat:@"JavaScript 执行失败：%@",error.localizedDescription?:error.domain]);return;}
+  NSString *text=nil;
+  if([NSJSONSerialization isValidJSONObject:@[result?:NSNull.null]]){
+   NSData *data=[NSJSONSerialization dataWithJSONObject:result?:NSNull.null options:0 error:nil];
+   text=data?[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]:nil;
+  }
+  if(!text)text=result?DXShort([result description],8000):@"null";
+  finish(@{@"result":text?:@"null",@"resultClass":result?DXClass(result):@"null",@"webView":DXClass(webView),@"duration":@(NSDate.date.timeIntervalSince1970-started)},nil);
+ }];
+}
+- (void)recordTrace:(NSString *)key values:(NSArray *)values result:(id)result {
+ static __thread BOOL inTrace=NO;
+ if(inTrace)return;inTrace=YES;
+ @try{
+  NSDictionary *hook=nil;@synchronized(self){hook=self.traceHooks[key];}
+  if(hook){
+   NSMutableArray *args=[NSMutableArray new];
+   for(id value in values){
+    if(!value||value==NSNull.null)[args addObject:@"nil"];
+    else if([value isKindOfClass:NSString.class])[args addObject:DXShort(value,200)];
+    else [args addObject:DXShort([value description],200)];
+   }
+   NSMutableDictionary *row=[@{@"time":@(NSDate.date.timeIntervalSince1970),@"class":hook[@"class"],@"selector":hook[@"selector"],@"thread":NSThread.isMainThread?@"main":@"background",@"args":args} mutableCopy];
+   if(result&&result!=NSNull.null)row[@"return"]=DXShort([result description],300);
+   @synchronized(self){
+    if(self.traceRecords.count<500)[self.traceRecords addObject:row];
+    else self.traceDropped++;
+   }
+  }
+ }@catch(NSException *exception){}
+ inTrace=NO;
+}
+- (NSDictionary *)stopTraceWithClass:(NSString *)className selector:(NSString *)selectorName {
+ NSUInteger stopped=0;NSArray *keys=nil;@synchronized(self){keys=self.traceHooks.allKeys;}
+ for(NSString *key in keys){
+  NSDictionary *hook=nil;@synchronized(self){hook=self.traceHooks[key];}
+  if(!hook)continue;
+  if(className.length&&![hook[@"class"] isEqual:className])continue;
+  if(selectorName.length&&![hook[@"selector"] isEqual:selectorName])continue;
+  Class cls=NSClassFromString(hook[@"class"]);
+  if(cls){
+   SEL selector=NSSelectorFromString(hook[@"selector"]);
+   IMP original=(IMP)[hook[@"original"] pointerValue];
+   const char *types=[hook[@"types"] UTF8String];
+   if(original&&types)class_replaceMethod(cls,selector,original,types);
+  }
+  @synchronized(self){[self.traceHooks removeObjectForKey:key];}
+  stopped++;
+ }
+ return @{@"stopped":@(stopped),@"activeHooks":@(self.traceHooks.count)};
+}
+- (NSDictionary *)traceOperation:(NSString *)action arguments:(NSDictionary *)arguments error:(NSString **)error {
+ if([action isEqualToString:@"read"]){
+  NSArray *records=nil,*hooks=nil;
+  @synchronized(self){records=[[self.traceRecords reverseObjectEnumerator] allObjects];hooks=self.traceHooks.allValues;}
+  NSMutableArray *names=[NSMutableArray new];for(NSDictionary *hook in hooks)[names addObject:[NSString stringWithFormat:@"%@|%@",hook[@"class"],hook[@"selector"]]];
+  return @{@"records":records,@"count":@(records.count),@"dropped":@(self.traceDropped),@"hooks":names,@"recording":@(self.traceHooks.count>0)};
+ }
+ if([action isEqualToString:@"clear"]){@synchronized(self){[self.traceRecords removeAllObjects];}self.traceDropped=0;return @{@"cleared":@YES};}
+ if([action isEqualToString:@"stop"]){
+  NSDictionary *result=[self stopTraceWithClass:arguments[@"class"] selector:arguments[@"selector"]];
+  if(!self.traceHooks.count)self.traceGeneration++;
+  return result;
+ }
+ if(![action isEqualToString:@"start"]){if(error)*error=@"trace 操作仅支持 start / stop / read / clear";return nil;}
+ NSString *className=arguments[@"class"],*selectorName=arguments[@"selector"];
+ if(![className isKindOfClass:NSString.class]||className.length>200||![selectorName isKindOfClass:NSString.class]||selectorName.length==0||selectorName.length>300){if(error)*error=@"trace_start 需要 class 与 selector";return nil;}
+ if(self.traceHooks.count>=8){if(error)*error=@"同时最多追踪 8 个方法，请先 stop";return nil;}
+ Class cls=NSClassFromString(className);if(!cls){if(error)*error=[@"找不到类：" stringByAppendingString:className];return nil;}
+ SEL selector=NSSelectorFromString(selectorName);Method method=class_getInstanceMethod(cls,selector);
+ if(!method){if(error)*error=[@"类中不存在实例方法：" stringByAppendingString:selectorName];return nil;}
+ NSMethodSignature *signature=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+ NSUInteger argumentCount=signature.numberOfArguments>=2?signature.numberOfArguments-2:0;
+ if(argumentCount>3){if(error)*error=@"方法追踪最多支持 3 个参数";return nil;}
+ for(NSUInteger i=2;i<signature.numberOfArguments;i++){
+  const char *type=[signature getArgumentTypeAtIndex:i];
+  if(type[0]!='@'||type[1]=='?'){if(error)*error=[NSString stringWithFormat:@"参数 %lu 不是对象类型，暂不支持追踪",(unsigned long)(i-1)];return nil;}
+ }
+ const char *returnType=signature.methodReturnType;
+ if(returnType[0]!='v'&&returnType[0]!='@'){if(error)*error=@"仅支持返回 void 或对象的方法";return nil;}
+ NSString *key=[NSString stringWithFormat:@"%@|%@",className,selectorName];
+ @synchronized(self){if(self.traceHooks[key]){if(error)*error=@"该方法已在追踪中";return nil;}}
+ IMP original=method_getImplementation(method);const char *types=method_getTypeEncoding(method);
+ __weak typeof(self) weakSelf=self;
+ typedef void (*AXV0)(id,SEL);typedef void (*AXV1)(id,SEL,id);typedef void (*AXV2)(id,SEL,id,id);typedef void (*AXV3)(id,SEL,id,id,id);
+ typedef id (*AXI0)(id,SEL);typedef id (*AXI1)(id,SEL,id);typedef id (*AXI2)(id,SEL,id,id);typedef id (*AXI3)(id,SEL,id,id,id);
+ IMP replacement=nil;
+ if(returnType[0]=='v'){
+  if(argumentCount==0)replacement=imp_implementationWithBlock(^(id target,SEL cmd){[weakSelf recordTrace:key values:@[] result:nil];((AXV0)original)(target,cmd);});
+  else if(argumentCount==1)replacement=imp_implementationWithBlock(^(id target,SEL cmd,id a){[weakSelf recordTrace:key values:@[a?:NSNull.null] result:nil];((AXV1)original)(target,cmd,a);});
+  else if(argumentCount==2)replacement=imp_implementationWithBlock(^(id target,SEL cmd,id a,id b){[weakSelf recordTrace:key values:@[a?:NSNull.null,b?:NSNull.null] result:nil];((AXV2)original)(target,cmd,a,b);});
+  else replacement=imp_implementationWithBlock(^(id target,SEL cmd,id a,id b,id c){[weakSelf recordTrace:key values:@[a?:NSNull.null,b?:NSNull.null,c?:NSNull.null] result:nil];((AXV3)original)(target,cmd,a,b,c);});
+ } else {
+  if(argumentCount==0)replacement=imp_implementationWithBlock(^id(id target,SEL cmd){id result=((AXI0)original)(target,cmd);[weakSelf recordTrace:key values:@[] result:result];return result;});
+  else if(argumentCount==1)replacement=imp_implementationWithBlock(^id(id target,SEL cmd,id a){id result=((AXI1)original)(target,cmd,a);[weakSelf recordTrace:key values:@[a?:NSNull.null] result:result];return result;});
+  else if(argumentCount==2)replacement=imp_implementationWithBlock(^id(id target,SEL cmd,id a,id b){id result=((AXI2)original)(target,cmd,a,b);[weakSelf recordTrace:key values:@[a?:NSNull.null,b?:NSNull.null] result:result];return result;});
+  else replacement=imp_implementationWithBlock(^id(id target,SEL cmd,id a,id b,id c){id result=((AXI3)original)(target,cmd,a,b,c);[weakSelf recordTrace:key values:@[a?:NSNull.null,b?:NSNull.null,c?:NSNull.null] result:result];return result;});
+ }
+ if(!replacement){if(error)*error=@"无法创建方法追踪实现";return nil;}
+ class_replaceMethod(cls,selector,replacement,types);
+ NSDictionary *hook=@{@"class":className,@"selector":selectorName,@"original":[NSValue valueWithPointer:original],@"replacement":[NSValue valueWithPointer:replacement],@"types":[NSString stringWithUTF8String:types]?:@""};
+ @synchronized(self){self.traceHooks[key]=hook;}
+ NSUInteger generation=++self.traceGeneration;
+ __weak typeof(self) weak= self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(600*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  typeof(self) strong=weak;
+  if(strong&&strong.traceGeneration==generation)[strong stopTraceWithClass:nil selector:nil];
+ });
+ return @{@"tracing":@YES,@"class":className,@"selector":selectorName,@"arguments":@(argumentCount),@"returnType":[NSString stringWithUTF8String:returnType]?:@"?",@"autoStopSeconds":@600};
+}
+
 - (NSDictionary *)execute:(NSString *)operation arguments:(NSDictionary *)arguments error:(NSString **)error {
  NSAssert(NSThread.isMainThread,@"FLEX runtime must run on main thread");
  if (![operation isKindOfClass:NSString.class] || ![arguments isKindOfClass:NSDictionary.class]) { if(error)*error=@"命令格式错误"; return nil; }
@@ -623,11 +1022,19 @@ static NSDictionary *DXBody(NSData *body) {
   bar.text=query;id<UISearchBarDelegate> delegate=bar.delegate;if([delegate respondsToSelector:@selector(searchBar:textDidChange:)])[delegate searchBar:bar textDidChange:query];
   [bar resignFirstResponder];return @{@"searched":@YES,@"query":query,@"requeryRequired":@YES};
  }
- if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"hit_test",@"view_tree",@"object_info",@"find_instances",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"cookies_list",@"sandbox_list",@"defaults_keys"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"sandbox_read",@"defaults_get",@"keychain_list",@"activate_control",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304},@"arbitraryMethodInvocation":@YES};
+ if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"screen_texts",@"find_text",@"hit_test",@"view_tree",@"object_info",@"object_properties",@"find_instances",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"network_search",@"cookies_list",@"sandbox_list",@"defaults_keys",@"snapshot"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"network_export",@"sandbox_read",@"sandbox_grep",@"defaults_get",@"keychain_list",@"activate_control",@"highlight_element",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method",@"tap_text"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304,@"traceEvents":@500,@"traceMethods":@8},@"arbitraryMethodInvocation":@YES};
+ if([operation isEqual:@"find_text"])return [self findText:arguments error:error];
+ if([operation isEqual:@"screen_texts"])return [self screenTexts:arguments error:error];
+ if([operation isEqual:@"object_properties"])return [self objectProperties:arguments error:error];
+ if([operation isEqual:@"network_search"])return [self networkSearch:arguments error:error];
+ if([operation isEqual:@"snapshot"])return [self snapshot:arguments error:error];
+ if([operation isEqual:@"sandbox_grep"])return [self sandboxGrep:arguments error:error];
+ if([operation isEqual:@"network_export"])return [self networkExport:arguments error:error];
+ if([operation isEqual:@"highlight_element"])return [self highlightElement:arguments error:error];
  if ([operation isEqual:@"capture_screen"]) {
   BOOL flex=[arguments[@"surface"] isEqual:@"flex"];
   if(flex&&![self flexVisibleController]){if(error)*error=@"FLEX 功能页不可见，请先收起会话并打开工具页";return nil;}
-  NSMutableDictionary *result=[[self captureWindow:flex?FLEXManager.sharedManager.explorerWindow:[self window] error:error] mutableCopy];
+  NSMutableDictionary *result=[[self captureWindow:flex?FLEXManager.sharedManager.explorerWindow:[self window] rect:arguments[@"rect"] error:error] mutableCopy];
   if(result)result[@"scope"]=flex?@"flex_window":@"target_app_window";return result;
  }
  if ([operation isEqual:@"screen_elements"]) {
