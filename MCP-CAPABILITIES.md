@@ -49,6 +49,8 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | read | 始终可用 | `aiflex_status` / `aiflex_read` |
 | sensitive | 手机面板「敏感读取」 | `aiflex_sensitive` 不出现在 `tools/list` |
 | control | 手机面板「界面控制」 | `aiflex_control` 不出现在 `tools/list` |
+| script | 手机面板「脚本执行」 | `aiflex_script` 不出现在 `tools/list` |
+| tracing | 手机面板「方法追踪」 | `aiflex_trace` 不出现在 `tools/list` |
 
 所有写操作、敏感读取都必须由手机端用户显式授权；授权关闭时工具直接不可见，调用会报“未知工具”。
 
@@ -71,9 +73,11 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | 工具 | 授权 | 用途 |
 |---|---|---|
 | `aiflex_status` | read | 当前 App、端点、服务状态、工具组 |
-| `aiflex_read` | read | 只读观察：页面、视图树、对象、类、实例、网络、沙盒、设置 |
-| `aiflex_sensitive` | sensitive | 敏感内容：头文件、日志/网络正文、截图、Keychain 元数据 |
-| `aiflex_control` | control | 操作：导航、输入、控件、滚动、显示、手势、方法调用 |
+| `aiflex_read` | read | 只读观察：页面、文字查找、视图树、对象/属性、实例、网络、沙盒、设置、快照 |
+| `aiflex_sensitive` | sensitive | 敏感内容：头文件、日志/网络正文、文件搜索、截图、Keychain 元数据 |
+| `aiflex_control` | control | 操作：导航、按文字点击、输入、控件、滚动、高亮、手势、方法调用 |
+| `aiflex_script` | script | 在 WKWebView 执行 JavaScript |
+| `aiflex_trace` | tracing | 实验性方法调用追踪 |
 
 所有工具都是 `operation` 驱动，参数平铺在同一层，例如：
 
@@ -111,6 +115,11 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `current` | 无 | bundleID、当前控制器与路径、屏幕文字摘要、选中对象信息 |
 | `report` | 无 | FLEX 现场文本报告 + 当前运行时摘要（最多 16000 字符） |
 | `screen_elements` | `offset`（0–1200，默认 0） | 当前窗口可交互/有文字元素，每页 100 个，返回 `nextOffset` |
+| `screen_texts` | `limit`（1–200，默认 120） | 当前页面可见文字与所属控件，适合低成本“读屏” |
+| `find_text` | `query`（必填）,`exact`,`limit`（1–50） | 按文字/accessibilityIdentifier 查找元素，返回 id、frame、中心点、是否可交互 |
+| `object_properties` | `id`（可选，默认选中对象） | 读取对象 ivar 的值（不调用 getter），对象值附带 `valueId` 可继续展开 |
+| `network_search` | `query`,`host`,`status`,`method`,`limit`（1–50） | 在网络记录中过滤，不返回正文 |
+| `snapshot` | `action`（`save`/`diff`/`clear`） | 保存当前界面快照、对比最近两次、清空；最多保留 5 份 |
 | `hit_test` | `x`,`y` | 命中视图 + 最近可交互祖先 |
 | `view_tree` | `id`（可选） | 视图树，最多 120 节点；不带 id 会重置全部视图 id |
 | `object_info` | `id`（可选，默认选中对象） | 类、父类链、地址、类镜像、属性/ivar 等；返回可复用的 `id` |
@@ -179,10 +188,12 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `class_header` | `name`,`start_line`（默认 1）,`line_count`（1–120，默认 100） | 生成类头文件，单页不超过 96 KiB；返回 `next_line` |
 | `flex_ui_state` | 无 | FLEX 功能页的元素、文字摘要、可见行（`section`/`row`/`id`）、`canGoBack` |
 | `network_detail` | `id`（来自 `network_list`） | 单条请求详情，含最多 16 KiB 请求/响应正文 |
+| `network_export` | 无 | 把当前网络记录导出为 HAR 风格 JSON 到 `Documents/AiFlex2/`，返回相对路径 |
+| `sandbox_grep` | `path`,`query`,`limit`（1–200）,`case_sensitive` | 在 UTF-8 文本文件中按关键字搜索，返回命中行号与内容；单次最多扫描 8 MB |
 | `sandbox_read` | `path`,`offset`,`limit`,`tail` | 读取沙盒 UTF-8 文本；默认 128 KiB，上限 512 KiB；`tail=true` 读末尾且不能与 `offset` 同用 |
 | `defaults_get` | `key` | 单个 UserDefaults 值（最多 16000 字符） |
 | `keychain_list` | 无 | Keychain 账户元数据，最多 50 条，**从不返回值** |
-| `capture_screen` | `surface`（`target` 或 `flex`） | App 窗口 JPEG 截图，作为 image content 返回（小于约 400KB） |
+| `capture_screen` | `surface`（`target` 或 `flex`）,`rect`（可选） | App 窗口 JPEG 截图，作为 image content 返回（小于约 400KB）；`rect` 传 `"x,y,w,h"` 可裁剪 |
 
 `sandbox_read` 分页：用返回的 `next_offset` 继续读，检查 `has_more`、`totalBytes`、`modifiedAt`。文件可能轮转/截短，`offset > totalBytes` 时应重新读取末尾。
 
@@ -203,6 +214,8 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `input_text` | `id`,`text`,`replace`（可选布尔） | 向可见 `UITextField`/`UITextView` 输入，最多 4096 字符；安全输入框拒绝 |
 | `set_control_value` | `id` + `enabled` / `index` / `value` | 开关（布尔）、分段控件（序号）、滑块/步进器（数值） |
 | `activate_control` | `id` | 触发可见且启用的 `UIButton` 的 `TouchUpInside` |
+| `tap_text` | `query`,`index`（0–9）,`exact` | 按文字点击：按钮直接触发，其他元素自动 hit-test 后用手势点击 |
+| `highlight_element` | `id`,`duration`（0.5–10 秒） | 给元素加临时红框，便于截图确认；自动移除 |
 | `scroll_view` | `id`,`direction`（up/down/left/right）,`pages`（0–2） | 滚动目标 App 内的 `UIScrollView`，返回 `delta` 与 `reachedBoundary` |
 | `set_view` | `id` + `hidden` 或 `alpha` | 临时修改视图可见性/透明度，可用 `undo` 还原 |
 | `set_network_recording` | `enabled`（布尔） | 开启/关闭 FLEX 网络记录 |
@@ -332,6 +345,137 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-19
-- 对应能力：`invoke_method`、`find_instances`、`returnId` 对象复用
+- 文档版本：2026-11-19（第二批能力）
+- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪
 - 仓库：https://github.com/hoko20/AiFlex2
+
+---
+
+## 13. 第二批能力详解
+
+### 13.1 文字查找与点击
+
+```json
+{ "operation": "find_text", "query": "登录", "limit": 10 }
+{ "operation": "tap_text", "query": "登录" }
+{ "operation": "tap_text", "query": "删除", "index": 1, "exact": true }
+```
+
+`find_text` 返回 `matches[]`，每项含 `id`、`class`、`text`、`frame`、`interactive`、`center`（窗口坐标）。
+
+`tap_text` 的行为：
+
+- 目标是可见、启用的 `UIButton` → 直接 `sendActionsForControlEvents:UIControlEventTouchUpInside`。
+- 其他元素 → 必须已收起 FLEX 覆盖层，然后按中心点发送真实点击。
+- 文字重复时用 `index` 选择第几个匹配项。
+- 返回 `method` 说明用了哪条路径；仍需重新读取页面确认。
+
+### 13.2 对象字段值
+
+```json
+{ "operation": "object_properties", "id": "obj-..." }
+```
+
+- 只读 ivar，不调用 getter，避免触发懒加载或网络请求。
+- 最多返回 60 个 ivar，字符串截断到 300 字符。
+- 对象类型的值会附带 `valueId`，可继续 `object_info` 或 `object_properties` 展开一层。
+- 结构体、联合体、C 指针显示为 `<unsupported>`。
+
+### 13.3 网络与日志分析
+
+```json
+{ "operation": "network_search", "query": "/api/login", "status": 200, "limit": 10 }
+{ "operation": "network_export" }
+{ "operation": "sandbox_grep", "path": "Documents/app.log", "query": "error", "limit": 50 }
+```
+
+- `network_search` 只返回元数据，正文用 `network_detail`。
+- `network_export` 生成 `Documents/AiFlex2/network-<时间戳>.json`，最多 50 条，正文每条 16 KiB。
+- `sandbox_grep` 单次最多扫描文件前 8 MB；`truncatedFile=true` 表示文件更大。
+- 日志优先用 `sandbox_read(tail=true)` 看末尾，再按关键字 grep。
+
+### 13.4 快照对比
+
+```json
+{ "operation": "snapshot", "action": "save" }
+{ "operation": "snapshot", "action": "diff" }
+```
+
+`diff` 返回：
+
+- `controllerBefore` / `controllerAfter` / `controllerChanged`
+- `addedTexts` / `removedTexts`
+- `elementsBefore` / `elementsAfter` / `elementsDelta`
+
+用于验证“点击后页面是否真的变了”，比人眼比对截图稳定。最多保留 5 份快照。
+
+### 13.5 截图裁剪
+
+```json
+{ "operation": "capture_screen", "surface": "target", "rect": "0,88,390,400" }
+```
+
+`rect` 使用窗口坐标（point），超出窗口会被裁剪到窗口内；返回 `cropped=true`。
+
+### 13.6 高亮元素
+
+```json
+{ "operation": "highlight_element", "id": "<实时id>", "duration": 3 }
+```
+
+在目标窗口上叠加红框，不拦截触摸，到时自动移除。只用于确认位置，不改变业务视图。
+
+### 13.7 脚本执行（`aiflex_script`）
+
+需要手机面板「脚本执行」授权，默认关闭。
+
+```json
+{ "operation": "run_js", "code": "document.title" }
+{ "operation": "run_js", "id": "<WKWebView id>", "code": "document.querySelector('input').value" }
+```
+
+- 只作用于当前页面的 `WKWebView` / `UIWebView`；没有 WebView 时直接报错。
+- `code` 最多 20000 字符，执行超时 15 秒。
+- 返回 `result`（JSON 或字符串）、`resultClass`、`webView`、`duration`。
+- 只影响网页，不会直接崩溃原生进程，但可能破坏页面状态或被 App 校验拦截。
+
+### 13.8 方法追踪（`aiflex_trace`）
+
+需要手机面板「方法追踪」授权，默认关闭，属于实验能力。
+
+```json
+{ "operation": "start", "class": "MyViewController", "selector": "reloadData" }
+{ "operation": "read" }
+{ "operation": "stop", "class": "MyViewController", "selector": "reloadData" }
+{ "operation": "clear" }
+```
+
+限制与风险：
+
+- 只支持**实例方法**，最多 3 个对象参数，返回值只能是 `void` 或对象。
+- 同时最多追踪 8 个方法；记录环形缓冲 500 条，超出后只计数。
+- 10 分钟自动停止所有 Hook。
+- 记录内容：时间、类、selector、线程（main/background）、参数描述（200 字符）、返回值描述（300 字符）。
+- 实现方式是在运行期替换方法 IMP；退出前必须 `stop`，否则 App 生命周期内会一直生效。
+- 高频方法（如 `layoutSubviews`、`setFrame:`）会导致性能下降，不建议开启。
+- 崩溃后只能重启 App，Hook 无法自动恢复。
+
+### 13.9 新增授权开关
+
+| 开关 | 默认 | 对应工具 | 说明 |
+|---|---|---|---|
+| 脚本执行 | 关闭 | `aiflex_script` | 允许在 WKWebView 执行 JS |
+| 方法追踪 | 关闭 | `aiflex_trace` | 允许替换方法实现并记录调用 |
+
+面板中每个开关下方都有对应说明；关闭后对应工具不会出现在 `tools/list`。
+
+## 14. 新增对话模板
+
+- 「用 `find_text` 找到“登录”按钮，再用 `tap_text` 点它，最后对比快照确认页面变了。」
+- 「先用 `snapshot save`，点“刷新”，再 `snapshot diff`，告诉我新增了哪些文字。」
+- 「用 `object_properties` 读这个 cell 的 ivar，重点看 viewModel 和数据源。」
+- 「用 `sandbox_grep` 搜 `error`，只返回最近 50 条命中。」
+- 「把当前网络记录导出成 JSON，给我路径。」
+- 「开脚本执行，读取这个页面 `document.title` 和输入框的值。」
+- 「追踪 `MyViewController` 的 `reloadData`，操作一次后读记录，然后立刻 stop。」
+

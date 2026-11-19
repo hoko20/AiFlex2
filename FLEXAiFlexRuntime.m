@@ -650,7 +650,6 @@ static NSDictionary *DXBody(NSData *body) {
 - (NSDictionary *)objectProperties:(NSDictionary *)arguments error:(NSString **)error {
  id object=arguments[@"id"]?[self objectForIdentifier:arguments[@"id"]]:self.selectedObject;
  if(!object){if(error)*error=@"对象已释放或没有被选中";return nil;}
- BOOL tagged=(((uintptr_t)(__bridge const void *)object)&1)!=0;
  NSMutableArray *rows=[NSMutableArray new];unsigned int count=0;Ivar *ivars=class_copyIvarList([object class],&count);
  for(unsigned int i=0;i<count&&rows.count<60;i++){
   Ivar ivar=ivars[i];const char *name=ivar_getName(ivar);const char *type=ivar_getTypeEncoding(ivar);if(!name||!type)continue;
@@ -663,8 +662,6 @@ static NSDictionary *DXBody(NSData *body) {
      row[@"value"]=value?DXShort([value description],300):@"nil";
      if(value){row[@"class"]=DXClass(value);NSString *identifier=[self registerObject:value];if(identifier)row[@"valueId"]=identifier;}
     }
-   } else if(tagged){
-    row[@"value"]=@"<tagged pointer>";
    } else {
     NSString *value=[self primitiveValueForType:type pointer:(const char *)(__bridge const void *)object+ivar_getOffset(ivar)];
     row[@"value"]=value?:@"<unsupported>";
@@ -721,7 +718,8 @@ static NSDictionary *DXBody(NSData *body) {
   NSString *line=lines[i];if([line rangeOfString:query options:options].location==NSNotFound)continue;
   [matches addObject:@{@"line":@(i+1),@"text":DXShort(line,400)}];
  }
- unsigned long long fileBytes=[[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileSize] unsignedLongLongValue];
+ NSDictionary *fileAttributes=[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+ unsigned long long fileBytes=[fileAttributes[NSFileSize] unsignedLongLongValue];
  return @{@"path":relative,@"query":query,@"matches":matches,@"scannedBytes":@(data.length),@"fileBytes":@(fileBytes),@"truncatedFile":@(fileBytes>data.length),@"truncatedMatches":@(matches.count>=limit)};
 }
 - (NSDictionary *)networkExport:(NSDictionary *)arguments error:(NSString **)error {
@@ -937,12 +935,12 @@ static NSDictionary *DXBody(NSData *body) {
  }
  if(!replacement){if(error)*error=@"无法创建方法追踪实现";return nil;}
  class_replaceMethod(cls,selector,replacement,types);
- NSDictionary *hook=@{@"class":className,@"selector":selectorName,@"original":[NSValue valueWithPointer:original],@"replacement":[NSValue valueWithPointer:replacement],@"types":[NSString stringWithUTF8String:types]?:@""};
+ NSDictionary *hook=@{@"class":className,@"selector":selectorName,@"original":[NSValue valueWithPointer:(void *)original],@"replacement":[NSValue valueWithPointer:(void *)replacement],@"types":[NSString stringWithUTF8String:types]?:@""};
  @synchronized(self){self.traceHooks[key]=hook;}
  NSUInteger generation=++self.traceGeneration;
  __weak typeof(self) weak= self;
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(600*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-  typeof(self) strong=weak;
+  FLEXAiFlexRuntime *strong=weak;
   if(strong&&strong.traceGeneration==generation)[strong stopTraceWithClass:nil selector:nil];
  });
  return @{@"tracing":@YES,@"class":className,@"selector":selectorName,@"arguments":@(argumentCount),@"returnType":[NSString stringWithUTF8String:returnType]?:@"?",@"autoStopSeconds":@600};

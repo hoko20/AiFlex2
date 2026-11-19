@@ -35,7 +35,36 @@
  if(!cell)cell=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"cell"];
  return cell;
 }
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath{
+ if(indexPath.section==1&&(indexPath.row==0||indexPath.row>=4))return 68;
+ return 50;
+}
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath{
+ if(indexPath.section==1&&(indexPath.row==0||indexPath.row>=4)){
+  UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"permission"];
+  if(!cell)cell=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"permission"];
+  cell.accessoryView=nil;cell.accessoryType=UITableViewCellAccessoryNone;cell.selectionStyle=UITableViewCellSelectionStyleNone;
+  cell.textLabel.font=[UIFont systemFontOfSize:16];cell.textLabel.textColor=UIColor.labelColor;
+  cell.detailTextLabel.font=[UIFont systemFontOfSize:11];cell.detailTextLabel.textColor=UIColor.secondaryLabelColor;cell.detailTextLabel.numberOfLines=0;
+  NSArray *titles=@[@"授权保护",@"敏感读取",@"界面控制",@"脚本执行",@"方法追踪"];
+  NSArray *details=@[@"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接",
+   @"头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据",
+   @"点击、输入、滚动、手势、高亮与方法调用，会改变 App 状态",
+   @"在 WKWebView 执行 JavaScript，可能改变网页状态",
+   @"替换方法实现并记录调用，高风险，10 分钟自动停止"];
+  NSInteger index=indexPath.row==0?0:indexPath.row-3;
+  cell.textLabel.text=titles[index];cell.detailTextLabel.text=details[index];
+  UISwitch *toggle=[UISwitch new];toggle.tag=820+index;
+  if(index==0)toggle.on=[FLEXAiFlexMCPServer authRequired];
+  else if(index==1)toggle.on=[FLEXAiFlexMCPServer sensitiveEnabled];
+  else if(index==2)toggle.on=[FLEXAiFlexMCPServer controlEnabled];
+  else if(index==3)toggle.on=[FLEXAiFlexMCPServer scriptEnabled];
+  else toggle.on=[FLEXAiFlexMCPServer tracingEnabled];
+  if(index==0&&![FLEXAiFlexMCPServer isEnabled])cell.textLabel.textColor=UIColor.secondaryLabelColor;
+  else if(index>=3&&toggle.on)cell.textLabel.textColor=UIColor.systemOrangeColor;
+  [toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];
+  cell.accessoryView=toggle;return cell;
+ }
  UITableViewCell *cell=[self cell:tableView];
  cell.accessoryView=nil;cell.accessoryType=UITableViewCellAccessoryNone;cell.selectionStyle=UITableViewCellSelectionStyleDefault;
  cell.detailTextLabel.text=nil;cell.textLabel.textColor=UIColor.labelColor;cell.textLabel.font=[UIFont systemFontOfSize:17];

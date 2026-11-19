@@ -370,6 +370,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         }
         cell.accessoryType = UITableViewCellAccessoryNone;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.textLabel.textColor = UIColor.labelColor;
         cell.textLabel.font = [UIFont systemFontOfSize:16];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
         cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
