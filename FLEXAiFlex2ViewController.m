@@ -521,7 +521,8 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 }
 
 - (void)collapseTapped {
-    [self minimizeWithTarget:YES completion:nil];
+    // 只收起 AiFlex2 面板，保留 FLEX 悬浮工具条，方便继续在 App 里操作。
+    [self minimizeWithTarget:NO completion:nil];
 }
 
 - (void)doneTapped {
