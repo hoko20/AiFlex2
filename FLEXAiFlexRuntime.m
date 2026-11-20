@@ -13,6 +13,7 @@
 #import <objc/runtime.h>
 #import <math.h>
 #include <string.h>
+#import <mach/mach.h>
 
 // Declared locally so the dylib does not hard-link WebKit; the class is looked
 // up at runtime and the call is only made when a WKWebView is present.
@@ -310,14 +311,14 @@ static NSDictionary *DXBody(NSData *body) {
  if(value.length&&![items containsObject:value])[items addObject:value];
  for(UIView *child in view.subviews){if(*scanned>=1200||items.count>=60)break;[self collectScreenTexts:child window:window items:items scanned:scanned];}
 }
-- (NSDictionary *)viewRow:(UIView *)view depth:(NSUInteger)depth count:(NSUInteger *)count {
+- (NSDictionary *)viewRow:(UIView *)view depth:(NSUInteger)depth count:(NSUInteger *)count maxDepth:(NSUInteger)maxDepth {
  NSString *identifier=[self registerView:view]; (*count)++;
- NSMutableDictionary *row=[@{@"id":identifier,@"class":DXClass(view),@"frame":NSStringFromCGRect(view.frame),@"frameInWindow":NSStringFromCGRect([view convertRect:view.bounds toView:[self window]]),@"hidden":@(view.hidden),@"alpha":@(view.alpha)} mutableCopy];
+ NSMutableDictionary *row=[@{@"id":identifier,@"class":DXClass(view),@"depth":@(depth),@"interactive":@([self isInteractiveView:view]),@"frame":NSStringFromCGRect(view.frame),@"frameInWindow":NSStringFromCGRect([view convertRect:view.bounds toView:[self window]]),@"hidden":@(view.hidden),@"alpha":@(view.alpha)} mutableCopy];
  if ([view isKindOfClass:UILabel.class]) row[@"text"]=DXShort(((UILabel *)view).text,160);
  if ([view isKindOfClass:UIButton.class]) row[@"title"]=DXShort([((UIButton *)view) titleForState:UIControlStateNormal],120);
  if ([view isKindOfClass:UITextField.class]) row[@"placeholder"]=DXShort(((UITextField *)view).placeholder,120);
- if (depth<6 && *count<120) {
-  NSMutableArray *children=[NSMutableArray new]; for (UIView *child in view.subviews) { if (*count>=120) break; [children addObject:[self viewRow:child depth:depth+1 count:count]]; }
+ if (depth<maxDepth && *count<120) {
+  NSMutableArray *children=[NSMutableArray new]; for (UIView *child in view.subviews) { if (*count>=120) break; [children addObject:[self viewRow:child depth:depth+1 count:count maxDepth:maxDepth]]; }
   row[@"children"]=children;
  }
  return row;
@@ -737,6 +738,205 @@ static NSDictionary *DXBody(NSData *body) {
  if(![json writeToFile:path atomically:YES]){if(error)*error=@"导出文件写入失败";return nil;}
  return @{@"path":relative,@"entries":@(entries.count),@"bytes":@(json.length)};
 }
+- (NSDictionary *)visibleTextMatch:(NSString *)query {
+ UIWindow *window=[self window];if(!window)return nil;
+ NSMutableArray *stack=[NSMutableArray arrayWithObject:window];NSUInteger scanned=0;
+ while(stack.count&&scanned<1500){
+  UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+  if(!view||view.hidden||view.alpha<0.01)continue;
+  [stack addObjectsFromArray:view.subviews];
+  NSString *text=[self searchableTextForView:view];if(!text.length)continue;
+  if([text rangeOfString:query options:NSCaseInsensitiveSearch].location==NSNotFound)continue;
+  CGRect frame=[view convertRect:view.bounds toView:window];
+  if(CGRectIsEmpty(frame)||!CGRectIntersectsRect(frame,window.bounds))continue;
+  return @{@"id":[self registerView:view],@"class":DXClass(view),@"text":DXShort(text,200),@"frame":NSStringFromCGRect(frame),@"center":@{@"x":@(CGRectGetMidX(frame)),@"y":@(CGRectGetMidY(frame))}};
+ }
+ return nil;
+}
+- (BOOL)waitCondition:(NSString *)condition arguments:(NSDictionary *)arguments observed:(NSDictionary **)observed {
+ UIWindow *window=[self window];if(!window)return NO;
+ NSMutableArray *path=[NSMutableArray new];UIViewController *top=[self visibleControllerInWindow:window path:path];
+ NSMutableDictionary *snapshot=[NSMutableDictionary dictionaryWithDictionary:@{@"controller":DXClass(top),@"controllerPath":path}];
+ if([condition isEqualToString:@"controller"]){
+  NSString *wanted=arguments[@"class"]?:arguments[@"query"];
+  BOOL matched=wanted.length&&[DXClass(top) rangeOfString:wanted options:NSCaseInsensitiveSearch].location!=NSNotFound;
+  if(observed)*observed=snapshot;return matched;
+ }
+ if([condition isEqualToString:@"network"]){
+  NSString *query=arguments[@"query"];BOOL matched=NO;
+  for(FLEXHTTPTransaction *item in FLEXNetworkRecorder.defaultRecorder.HTTPTransactions){
+   NSURL *url=item.request.URL;
+   if(query.length&&[url.absoluteString rangeOfString:query options:NSCaseInsensitiveSearch].location!=NSNotFound){matched=YES;snapshot[@"transaction"]=[self networkRowForTransaction:item detail:NO];break;}
+  }
+  if(observed)*observed=snapshot;return matched;
+ }
+ if([condition isEqualToString:@"text_exists"]||[condition isEqualToString:@"text_gone"]){
+  NSString *query=arguments[@"query"];
+  NSDictionary *match=query.length?[self visibleTextMatch:query]:nil;
+  if(match)snapshot[@"match"]=match;
+  if(observed)*observed=snapshot;
+  return [condition isEqualToString:@"text_exists"]?match!=nil:match==nil;
+ }
+ if([condition isEqualToString:@"element_exists"]||[condition isEqualToString:@"element_gone"]){
+  UIView *target=nil;NSString *identifier=arguments[@"id"],*className=arguments[@"class"];
+  if([identifier isKindOfClass:NSString.class]){
+   id object=[self objectForIdentifier:identifier];
+   if([object isKindOfClass:UIView.class])target=object;
+  } else if([className isKindOfClass:NSString.class]&&className.length){
+   NSMutableArray *stack=[NSMutableArray arrayWithObject:window];NSUInteger scanned=0;
+   while(stack.count&&scanned<1500){
+    UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+    if(!view)continue;
+    if([NSStringFromClass(view.class) isEqualToString:className]&&[self isAttached:view]&&!view.hidden&&view.alpha>=0.01){target=view;break;}
+    [stack addObjectsFromArray:view.subviews];
+   }
+  }
+  BOOL present=target&&[self isAttached:target]&&!target.hidden&&target.alpha>=0.01;
+  if(present){
+   CGRect frame=[target convertRect:target.bounds toView:window];
+   snapshot[@"match"]=@{@"id":[self registerView:target],@"class":DXClass(target),@"frame":NSStringFromCGRect(frame)};
+  }
+  if(observed)*observed=snapshot;
+  return [condition isEqualToString:@"element_exists"]?present:!present;
+ }
+ if(observed)*observed=snapshot;return NO;
+}
+- (void)waitFor:(NSDictionary *)arguments completion:(void (^)(NSDictionary *, NSString *))completion {
+ NSString *condition=arguments[@"condition"];
+ NSArray *supported=@[@"text_exists",@"text_gone",@"element_exists",@"element_gone",@"controller",@"network"];
+ if(![supported containsObject:condition]){completion(nil,@"condition 仅支持 text_exists / text_gone / element_exists / element_gone / controller / network");return;}
+ if(([condition hasPrefix:@"text"]||[condition isEqualToString:@"network"])&&![arguments[@"query"] isKindOfClass:NSString.class]){completion(nil,@"该条件需要 query");return;}
+ if([condition hasPrefix:@"element"]&&![arguments[@"id"] isKindOfClass:NSString.class]&&![arguments[@"class"] isKindOfClass:NSString.class]){completion(nil,@"element 条件需要 id 或 class");return;}
+ double requested=[arguments[@"timeout"] doubleValue];
+ NSTimeInterval timeout=(requested>=0.5&&requested<=10)?requested:3.0;
+ NSTimeInterval started=NSDate.date.timeIntervalSince1970;NSTimeInterval deadline=started+timeout;
+ __block BOOL finished=NO;__weak typeof(self) weakSelf=self;
+ __block void (^poll)(void)=nil;
+ poll=^{
+  FLEXAiFlexRuntime *strong=weakSelf;
+  if(!strong){if(!finished){finished=YES;completion(nil,@"运行时已释放");}poll=nil;return;}
+  if(finished){poll=nil;return;}
+  NSDictionary *observed=nil;
+  BOOL satisfied=[strong waitCondition:condition arguments:arguments observed:&observed];
+  if(satisfied){
+   finished=YES;NSTimeInterval waited=NSDate.date.timeIntervalSince1970-started;
+   completion(@{@"condition":condition,@"satisfied":@YES,@"waited":@(waited),@"timedOut":@NO,@"observed":observed?:@{}},nil);
+   poll=nil;return;
+  }
+  if(NSDate.date.timeIntervalSince1970>=deadline){
+   finished=YES;NSTimeInterval waited=NSDate.date.timeIntervalSince1970-started;
+   completion(@{@"condition":condition,@"satisfied":@NO,@"waited":@(waited),@"timedOut":@YES,@"observed":observed?:@{}},nil);
+   poll=nil;return;
+  }
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.25*NSEC_PER_SEC)),dispatch_get_main_queue(),poll);
+ };
+ poll();
+}
+- (UIScrollView *)bestScrollViewInWindow:(UIWindow *)window {
+ if(!window)return nil;
+ UIScrollView *best=nil;CGFloat bestArea=0;
+ NSMutableArray *stack=[NSMutableArray arrayWithObject:window];NSUInteger scanned=0;
+ while(stack.count&&scanned<1500){
+  UIView *view=[stack lastObject];[stack removeLastObject];scanned++;
+  if(!view||view.hidden||view.alpha<0.01)continue;
+  [stack addObjectsFromArray:view.subviews];
+  if([view isKindOfClass:UIScrollView.class]&&view.window){
+   UIScrollView *scroll=(id)view;CGFloat maxY=scroll.contentSize.height-CGRectGetHeight(scroll.bounds)+scroll.adjustedContentInset.bottom;
+   CGFloat area=CGRectGetWidth(scroll.bounds)*CGRectGetHeight(scroll.bounds);
+   if(maxY>1&&area>bestArea){best=scroll;bestArea=area;}
+  }
+ }
+ return best;
+}
+- (void)scrollToText:(NSDictionary *)arguments completion:(void (^)(NSDictionary *, NSString *))completion {
+ NSString *query=arguments[@"query"];
+ if(![query isKindOfClass:NSString.class]||query.length==0||query.length>200){completion(nil,@"query 应为 1–200 字符");return;}
+ NSInteger requestedPages=[arguments[@"max_pages"] integerValue];
+ NSInteger maxPages=(requestedPages>=1&&requestedPages<=10)?requestedPages:5;
+ BOOL upwards=[arguments[@"direction"] isEqualToString:@"up"];
+ UIWindow *window=[self window];if(!window){completion(nil,@"当前没有可见窗口");return;}
+ UIScrollView *scroll=nil;
+ NSString *container=arguments[@"container"];
+ if([container isKindOfClass:NSString.class]){
+  id object=[self objectForIdentifier:container];
+  if([object isKindOfClass:UIScrollView.class])scroll=object;
+  if(!scroll){completion(nil,@"container 不是可用的 UIScrollView");return;}
+ } else scroll=[self bestScrollViewInWindow:window];
+ if(!scroll){completion(nil,@"当前页面没有可滚动的列表或滚动视图");return;}
+ CGPoint originalOffset=scroll.contentOffset;NSInteger page=0;
+ __weak typeof(self) weakSelf=self;__block void (^step)(void)=nil;
+ step=^{
+  FLEXAiFlexRuntime *strong=weakSelf;if(!strong){completion(nil,@"运行时已释放");step=nil;return;}
+  NSDictionary *match=[strong visibleTextMatch:query];
+  if(match){
+   completion(@{@"found":@YES,@"pages":@(page),@"match":match,@"contentOffset":@{@"x":@(scroll.contentOffset.x),@"y":@(scroll.contentOffset.y)},@"atEnd":@NO},nil);
+   step=nil;return;
+  }
+  CGFloat minY=-scroll.adjustedContentInset.top;
+  CGFloat maxY=MAX(minY,scroll.contentSize.height-CGRectGetHeight(scroll.bounds)+scroll.adjustedContentInset.bottom);
+  CGFloat delta=CGRectGetHeight(scroll.bounds)*0.8*(upwards?-1:1);
+  CGFloat nextY=MIN(maxY,MAX(minY,scroll.contentOffset.y+delta));
+  BOOL atEnd=fabs(nextY-scroll.contentOffset.y)<1;
+  if(page>=maxPages||atEnd){
+   completion(@{@"found":@NO,@"pages":@(page),@"atEnd":@(atEnd),@"truncated":@(!atEnd&&page>=maxPages),@"contentOffset":@{@"x":@(scroll.contentOffset.x),@"y":@(scroll.contentOffset.y)},@"startedAt":@{@"x":@(originalOffset.x),@"y":@(originalOffset.y)}},nil);
+   step=nil;return;
+  }
+  [scroll setContentOffset:CGPointMake(scroll.contentOffset.x,nextY) animated:NO];
+  page++;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),step);
+ };
+ step();
+}
+- (NSDictionary *)controllerStack {
+ UIWindow *window=[self window];if(!window)return nil;
+ NSMutableArray *path=[NSMutableArray new];UIViewController *top=[self visibleControllerInWindow:window path:path];
+ NSMutableArray *presented=[NSMutableArray new];
+ for(UIViewController *controller=window.rootViewController;controller&&presented.count<10;controller=controller.presentedViewController){
+  [presented addObject:@{@"class":DXClass(controller),@"title":DXShort(controller.title,120)}];
+ }
+ NSMutableArray *navigation=[NSMutableArray new];
+ UIViewController *root=window.rootViewController;
+ if([root isKindOfClass:UINavigationController.class]){
+  for(UIViewController *controller in ((UINavigationController *)root).viewControllers){
+   [navigation addObject:@{@"class":DXClass(controller),@"title":DXShort(controller.title,120)}];
+   if(navigation.count>=20)break;
+  }
+ }
+ return @{@"top":DXClass(top),@"topTitle":DXShort(top.title,120),@"controllerPath":path,@"navigation":navigation,@"presented":presented,@"hasModal":@(presented.count>1)};
+}
+- (NSDictionary *)appInfo {
+ NSDictionary *info=NSBundle.mainBundle.infoDictionary?:@{};
+ NSProcessInfo *process=NSProcessInfo.processInfo;
+ NSMutableDictionary *result=[@{@"bundleID":NSBundle.mainBundle.bundleIdentifier?:@"",@"name":info[@"CFBundleDisplayName"]?:info[@"CFBundleName"]?:@"",@"version":info[@"CFBundleShortVersionString"]?:@"",@"build":info[@"CFBundleVersion"]?:@"",@"executable":NSBundle.mainBundle.executablePath?:@"",@"bundlePath":NSBundle.mainBundle.bundlePath?:@"",@"container":NSHomeDirectory(),@"documents":[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"],@"library":[NSHomeDirectory() stringByAppendingPathComponent:@"Library"],@"tmp":NSTemporaryDirectory(),@"pid":@(process.processIdentifier),@"systemUptime":@(process.systemUptime),@"launchTime":@(NSDate.date.timeIntervalSince1970-process.systemUptime),@"processorCount":@(process.processorCount),@"activeProcessors":@(process.activeProcessorCount),@"physicalMemory":@(process.physicalMemory),@"lowPowerMode":@(process.isLowPowerModeEnabled),@"thermalState":@(process.thermalState)} mutableCopy];
+ task_vm_info_data_t vmInfo;mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+ if(task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&vmInfo,&count)==KERN_SUCCESS)result[@"footprintBytes"]=@(vmInfo.phys_footprint);
+ return result;
+}
+- (NSDictionary *)deviceInfo {
+ UIDevice *device=UIDevice.currentDevice;UIScreen *screen=UIScreen.mainScreen;
+ NSMutableDictionary *result=[@{@"systemName":device.systemName?:@"",@"systemVersion":device.systemVersion?:@"",@"model":device.model?:@"",@"localizedModel":device.localizedModel?:@"",@"idiom":@(device.userInterfaceIdiom),@"screenBounds":NSStringFromCGRect(screen.bounds),@"nativeBounds":NSStringFromCGRect(screen.nativeBounds),@"scale":@(screen.scale),@"nativeScale":@(screen.nativeScale),@"locale":NSLocale.currentLocale.localeIdentifier?:@"",@"languages":NSLocale.preferredLanguages?:@[],@"darkMode":@(UITraitCollection.currentTraitCollection.userInterfaceStyle==UIUserInterfaceStyleDark)} mutableCopy];
+ NSArray *jbPaths=@[@"/var/jb",@"/Applications/Cydia.app",@"/usr/sbin/sshd",@"/private/preboot"];
+ NSMutableArray *found=[NSMutableArray new];
+ for(NSString *path in jbPaths)if([NSFileManager.defaultManager fileExistsAtPath:path])[found addObject:path];
+ result[@"jailbreakPaths"]=found;result[@"jailbroken"]=@(found.count>0);
+ return result;
+}
+- (NSDictionary *)filterTreeNode:(NSDictionary *)node classFilter:(NSString *)classFilter textFilter:(NSString *)textFilter interactiveOnly:(BOOL)interactiveOnly includeHidden:(BOOL)includeHidden maxDepth:(NSInteger)maxDepth {
+ if(!includeHidden&&([node[@"hidden"] boolValue]||[node[@"alpha"] doubleValue]<0.01))return nil;
+ if(maxDepth>=0&&[node[@"depth"] integerValue]>maxDepth)return nil;
+ BOOL matches=YES;
+ if(classFilter.length)matches=[node[@"class"] rangeOfString:classFilter options:NSCaseInsensitiveSearch].location!=NSNotFound;
+ if(matches&&textFilter.length){
+  NSString *haystack=[@[node[@"class"]?:@"",node[@"text"]?:@"",node[@"title"]?:@"",node[@"placeholder"]?:@""] componentsJoinedByString:@" "];
+  matches=[haystack rangeOfString:textFilter options:NSCaseInsensitiveSearch].location!=NSNotFound;
+ }
+ if(interactiveOnly&&![node[@"interactive"] boolValue])matches=NO;
+ NSMutableArray *children=[NSMutableArray new];
+ for(NSDictionary *child in node[@"children"]){NSDictionary *kept=[self filterTreeNode:child classFilter:classFilter textFilter:textFilter interactiveOnly:interactiveOnly includeHidden:includeHidden maxDepth:maxDepth];if(kept)[children addObject:kept];}
+ if(!matches&&children.count==0)return nil;
+ NSMutableDictionary *copy=[node mutableCopy];copy[@"children"]=children;return copy;
+}
+
 - (NSDictionary *)captureSnapshot {
  UIWindow *window=[self window];NSMutableArray *path=[NSMutableArray new];
  UIViewController *controller=window?[self visibleControllerInWindow:window path:path]:nil;
@@ -1020,8 +1220,11 @@ static NSDictionary *DXBody(NSData *body) {
   bar.text=query;id<UISearchBarDelegate> delegate=bar.delegate;if([delegate respondsToSelector:@selector(searchBar:textDidChange:)])[delegate searchBar:bar textDidChange:query];
   [bar resignFirstResponder];return @{@"searched":@YES,@"query":query,@"requeryRequired":@YES};
  }
- if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"screen_texts",@"find_text",@"hit_test",@"view_tree",@"object_info",@"object_properties",@"find_instances",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"network_search",@"cookies_list",@"sandbox_list",@"defaults_keys",@"snapshot"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"network_export",@"sandbox_read",@"sandbox_grep",@"defaults_get",@"keychain_list",@"activate_control",@"highlight_element",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method",@"tap_text"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304,@"traceEvents":@500,@"traceMethods":@8},@"arbitraryMethodInvocation":@YES};
+ if ([operation isEqual:@"capabilities"]) return @{@"read":@[@"gesture_capabilities",@"tool_catalog",@"chat_status",@"current",@"screen_elements",@"screen_texts",@"find_text",@"wait_for",@"controller_stack",@"app_info",@"device_info",@"hit_test",@"view_tree",@"object_info",@"object_properties",@"find_instances",@"select_object",@"class_search",@"class_info",@"runtime_images",@"network_list",@"network_search",@"cookies_list",@"sandbox_list",@"defaults_keys",@"snapshot"],@"approvalRequired":@[@"class_header",@"input_text",@"set_control_value",@"flex_ui_state",@"minimize_chat",@"restore_chat",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"set_search",@"flex_scroll",@"capture_screen",@"network_detail",@"network_export",@"sandbox_read",@"sandbox_grep",@"defaults_get",@"keychain_list",@"activate_control",@"tap_text",@"scroll_to_text",@"highlight_element",@"scroll_view",@"set_view",@"set_network_recording",@"undo",@"invoke_method"],@"gestureBackend":[FLEXAiFlexTouchDriver backendCapabilities],@"networkRecordingEnabled":@(FLEXNetworkObserver.isEnabled),@"limits":@{@"viewNodes":@120,@"screenElements":@100,@"screenshotBytes":@(120*1024),@"networkRecords":@50,@"fileBytes":@524288,@"fileDefaultBytes":@131072,@"filePagination":@YES,@"fileTail":@YES,@"resultBytes":@4194304,@"traceEvents":@500,@"traceMethods":@8},@"arbitraryMethodInvocation":@YES};
  if([operation isEqual:@"find_text"])return [self findText:arguments error:error];
+ if([operation isEqual:@"controller_stack"]){NSDictionary *stack=[self controllerStack];if(!stack){if(error)*error=@"当前没有可见窗口";return nil;}return stack;}
+ if([operation isEqual:@"app_info"])return [self appInfo];
+ if([operation isEqual:@"device_info"])return [self deviceInfo];
  if([operation isEqual:@"screen_texts"])return [self screenTexts:arguments error:error];
  if([operation isEqual:@"object_properties"])return [self objectProperties:arguments error:error];
  if([operation isEqual:@"network_search"])return [self networkSearch:arguments error:error];
@@ -1072,7 +1275,18 @@ static NSDictionary *DXBody(NSData *body) {
   UIWindow *window=[self window]; if(!window){if(error)*error=@"当前没有可见窗口";return nil;}
   UIView *root=window;NSString *requested=arguments[@"id"];
   if(requested){root=[self.views objectForKey:requested];if(!root||![self isAttached:root]){if(error)*error=@"视图 ID 已过期，请先重新读取 screen_elements";return nil;}}
-  if(!requested)self.views=[NSMapTable strongToWeakObjectsMapTable];NSUInteger count=0;NSDictionary *tree=[self viewRow:root depth:0 count:&count];
+  if(!requested)self.views=[NSMapTable strongToWeakObjectsMapTable];NSUInteger count=0;
+  NSInteger requestedDepth=[arguments[@"max_depth"] integerValue];
+  NSUInteger maxDepth=(requestedDepth>=1&&requestedDepth<=12)?requestedDepth:6;
+  NSDictionary *tree=[self viewRow:root depth:0 count:&count maxDepth:maxDepth];
+  NSString *classFilter=[arguments[@"class_filter"] isKindOfClass:NSString.class]?arguments[@"class_filter"]:nil;
+  NSString *textFilter=[arguments[@"text_filter"] isKindOfClass:NSString.class]?arguments[@"text_filter"]:nil;
+  BOOL interactiveOnly=[arguments[@"interactive_only"] boolValue];
+  BOOL includeHidden=arguments[@"include_hidden"]?[arguments[@"include_hidden"] boolValue]:YES;
+  if(classFilter.length||textFilter.length||interactiveOnly||!includeHidden){
+   tree=[self filterTreeNode:tree classFilter:classFilter textFilter:textFilter interactiveOnly:interactiveOnly includeHidden:includeHidden maxDepth:maxDepth];
+  }
+  if(!tree){if(error)*error=@"过滤后没有匹配的视图，请放宽 class_filter / text_filter 或关闭 interactive_only";return nil;}
   UIView *selected=[self.selectedObject isKindOfClass:UIView.class]?self.selectedObject:nil;
   NSString *selectedID=selected?[self.viewIDs objectForKey:selected]:nil;BOOL selectedInTree=selectedID&&[self.views objectForKey:selectedID]==selected;
   return @{@"tree":tree,@"count":@(count),@"truncated":@(count>=120),@"selectedObject":[self objectInfo:self.selectedObject],@"selectedInTree":@(selectedInTree),@"selectedAncestors":selected?[self ancestorsForView:selected]:@[],@"selectedSiblings":selected?[self siblingsForView:selected]:@[],@"interactiveAncestor":selected?[self interactiveAncestorForView:selected]:@{@"available":@NO}};

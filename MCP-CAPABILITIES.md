@@ -117,6 +117,10 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `screen_elements` | `offset`（0–1200，默认 0） | 当前窗口可交互/有文字元素，每页 100 个，返回 `nextOffset` |
 | `screen_texts` | `limit`（1–200，默认 120） | 当前页面可见文字与所属控件，适合低成本“读屏” |
 | `find_text` | `query`（必填）,`exact`,`limit`（1–50） | 按文字/accessibilityIdentifier 查找元素，返回 id、frame、中心点、是否可交互 |
+| `wait_for` | `condition`（text_exists/text_gone/element_exists/element_gone/controller/network）,`query`,`class`,`id`,`timeout`（0.5–10 秒） | 轮询等待条件成立，返回是否满足、等待时长、超时标记和现场快照 |
+| `controller_stack` | 无 | 当前最顶层控制器、导航栈、presented 链、是否模态 |
+| `app_info` | 无 | bundleID、版本/构建号、容器路径、PID、启动时长、内存占用、处理器数 |
+| `device_info` | 无 | 系统版本、机型、屏幕尺寸/倍率、语言/地区、深浅色、越狱路径 |
 | `object_properties` | `id`（可选，默认选中对象） | 读取对象 ivar 的值（不调用 getter），对象值附带 `valueId` 可继续展开 |
 | `network_search` | `query`,`host`,`status`,`method`,`limit`（1–50） | 在网络记录中过滤，不返回正文 |
 | `snapshot` | `action`（`save`/`diff`/`clear`） | 保存当前界面快照、对比最近两次、清空；最多保留 5 份 |
@@ -215,6 +219,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `set_control_value` | `id` + `enabled` / `index` / `value` | 开关（布尔）、分段控件（序号）、滑块/步进器（数值） |
 | `activate_control` | `id` | 触发可见且启用的 `UIButton` 的 `TouchUpInside` |
 | `tap_text` | `query`,`index`（0–9）,`exact` | 按文字点击：按钮直接触发，其他元素自动 hit-test 后用手势点击 |
+| `scroll_to_text` | `query`,`direction`（up/down）,`max_pages`（1–10）,`container` | 在滚动视图里逐页滚动，直到指定文字进入可视区 |
 | `highlight_element` | `id`,`duration`（0.5–10 秒） | 给元素加临时红框，便于截图确认；自动移除 |
 | `scroll_view` | `id`,`direction`（up/down/left/right）,`pages`（0–2） | 滚动目标 App 内的 `UIScrollView`，返回 `delta` 与 `reachedBoundary` |
 | `set_view` | `id` + `hidden` 或 `alpha` | 临时修改视图可见性/透明度，可用 `undo` 还原 |
@@ -345,8 +350,8 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-19（第二批能力）
-- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪
+- 文档版本：2026-11-20（第三批能力）
+- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息
 - 仓库：https://github.com/hoko20/AiFlex2
 
 ---
@@ -478,4 +483,76 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 - 「把当前网络记录导出成 JSON，给我路径。」
 - 「开脚本执行，读取这个页面 `document.title` 和输入框的值。」
 - 「追踪 `MyViewController` 的 `reloadData`，操作一次后读记录，然后立刻 stop。」
+
+---
+
+## 15. 第三批能力（等待、滚动、页面栈、环境）
+
+### 15.1 `wait_for`
+
+```json
+{ "operation": "wait_for", "condition": "text_exists", "query": "首页", "timeout": 5 }
+{ "operation": "wait_for", "condition": "element_gone", "id": "<弹窗id>", "timeout": 3 }
+{ "operation": "wait_for", "condition": "controller", "class": "HomeViewController", "timeout": 5 }
+```
+
+- 每 0.25 秒检查一次，最长 10 秒；超时返回 `timedOut=true`，不是错误。
+- `text_exists` / `text_gone` 只看当前窗口内**可见**文字。
+- `element_exists` / `element_gone` 支持 `id` 或 `class`。
+- `controller` 匹配当前最顶层控制器类名（子串匹配）。
+- `network` 在已有网络记录里按 URL 子串匹配。
+- 等待期间 HTTP 请求保持打开，客户端超时需大于所用 `timeout`。
+
+### 15.2 `scroll_to_text`
+
+```json
+{ "operation": "scroll_to_text", "query": "退出登录", "direction": "down", "max_pages": 5 }
+```
+
+- 自动挑选窗口里面积最大、可滚动的 `UIScrollView` / 表格 / 集合视图。
+- 每次滚动 80% 可视高度，间隔 0.3 秒，最多 10 页。
+- 到边界且没有新内容时返回 `atEnd=true`，不把“没滚动”当成功。
+- 没有找到时返回 `found=false`，可用 `container` 指定具体滚动容器重试。
+
+### 15.3 `controller_stack`
+
+```json
+{ "operation": "controller_stack" }
+```
+
+返回 `top`、`topTitle`、`controllerPath`、`navigation[]`、`presented[]`、`hasModal`。用于确认“点不动是不是有弹窗盖住”。
+
+### 15.4 `view_tree` 过滤
+
+```json
+{ "operation": "view_tree", "interactive_only": true, "max_depth": 4 }
+{ "operation": "view_tree", "class_filter": "UITableViewCell", "text_filter": "订单", "include_hidden": false }
+```
+
+- 新增 `class_filter`、`text_filter`、`max_depth`（1–12，默认 6）、`interactive_only`、`include_hidden`。
+- 会保留匹配节点的祖先链，方便定位层级。
+- 节点仍受 120 个上限约束；没有匹配时返回错误，提示放宽条件。
+
+### 15.5 `app_info` / `device_info`
+
+```json
+{ "operation": "app_info" }
+{ "operation": "device_info" }
+```
+
+- `app_info`：版本、构建号、容器/可执行文件路径、PID、启动时长、`footprintBytes`、处理器数、物理内存。
+- `device_info`：系统版本、机型、屏幕逻辑/原生尺寸、倍率、语言/地区、深色模式、越狱路径。
+- 均为只读，数据量很小，不会造成内存压力。
+
+### 15.6 资源与风险
+
+| 能力 | 内存 | CPU | 风险 |
+|---|---|---|---|
+| `wait_for` | 极小，每次轮询只读当前界面 | 低，0.25 秒一次、最长 10 秒 | 无状态修改 |
+| `scroll_to_text` | 极小 | 低，最多 10 次滚动 | 会触发 App 自己的滚动/加载回调 |
+| `controller_stack` | 极小 | 一次性遍历 | 只读 |
+| `view_tree` 过滤 | 小，仍限 120 节点 | 一次性遍历 | 只读 |
+| `app_info` / `device_info` | 极小 | 一次性读取 | 只读 |
+
+结论：这一批没有高内存风险，主要注意 `wait_for` 不要设过长超时、`scroll_to_text` 不要对无限列表设置过大 `max_pages`。
 
