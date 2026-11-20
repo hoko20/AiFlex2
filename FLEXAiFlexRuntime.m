@@ -863,7 +863,7 @@ static NSDictionary *DXBody(NSData *body) {
   if(!scroll){completion(nil,@"container 不是可用的 UIScrollView");return;}
  } else scroll=[self bestScrollViewInWindow:window];
  if(!scroll){completion(nil,@"当前页面没有可滚动的列表或滚动视图");return;}
- CGPoint originalOffset=scroll.contentOffset;NSInteger page=0;
+ CGPoint originalOffset=scroll.contentOffset;__block NSInteger page=0;
  __weak typeof(self) weakSelf=self;__block void (^step)(void)=nil;
  step=^{
   FLEXAiFlexRuntime *strong=weakSelf;if(!strong){completion(nil,@"运行时已释放");step=nil;return;}
