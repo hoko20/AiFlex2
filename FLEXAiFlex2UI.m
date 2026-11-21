@@ -361,13 +361,25 @@ UIBarButtonItem *AXCheckmarkItem(id target, SEL action) {
 
 #pragma mark - 顶部栏
 
+static UIImage *AXSolidImage(UIColor *color) {
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+        initWithSize:CGSizeMake(1, 1)];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [color setFill];
+        UIRectFill(CGRectMake(0, 0, 1, 1));
+    }];
+}
+
 // 实底系统背景：不做模糊、不画 hairline。
-// 半透明玻璃在滚动时内容持续从栏下穿过，视觉噪音大，长时间看容易疲劳。
+// iOS 26 上光靠 UINavigationBarAppearance 有时会被系统玻璃外观盖掉，
+// 所以再铺一张纯色背景图 + barTintColor 兜底，确保栏是实心的。
 void AXApplyOpaqueNavigationBar(UINavigationBar *bar) {
     if (!bar) return;
+    UIColor *background = UIColor.systemBackgroundColor;
+
     UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
     [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = UIColor.systemBackgroundColor;
+    appearance.backgroundColor = background;
     appearance.shadowColor = UIColor.clearColor;
     appearance.backgroundEffect = nil;
     appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
@@ -377,8 +389,60 @@ void AXApplyOpaqueNavigationBar(UINavigationBar *bar) {
     bar.compactAppearance = appearance;
     bar.scrollEdgeAppearance = appearance;
     if (@available(iOS 15.0, *)) bar.compactScrollEdgeAppearance = appearance;
+
     bar.translucent = NO;
+    bar.barTintColor = background;
+    [bar setBackgroundImage:AXSolidImage(background) forBarMetrics:UIBarMetricsDefault];
     bar.shadowImage = [UIImage new];
+}
+
+#pragma mark - 状态栏
+
+static BOOL AXStatusBarStyleSaved = NO;
+static UIStatusBarStyle AXStatusBarStyleBefore = UIStatusBarStyleDefault;
+
+static void AXSetStatusBarStyle(UIStatusBarStyle style) {
+    UIApplication *app = UIApplication.sharedApplication;
+    @try {
+        if (app.statusBarStyle == style) return;
+    } @catch (__unused NSException *exception) {}
+
+    // 公开接口在 UIViewControllerBasedStatusBarAppearance=NO 的宿主里会被忽略，
+    // 这种情况只能走私有 setStatusBarStyle:animated:（越狱环境可用）。
+    SEL selector = NSSelectorFromString(@"setStatusBarStyle:animated:");
+    if (![app respondsToSelector:selector]) return;
+    NSMethodSignature *signature = [app methodSignatureForSelector:selector];
+    if (!signature) return;
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+    invocation.target = app;
+    invocation.selector = selector;
+    NSInteger raw = (NSInteger)style;
+    BOOL animated = YES;
+    [invocation setArgument:&raw atIndex:2];
+    [invocation setArgument:&animated atIndex:3];
+    @try {
+        [invocation invoke];
+    } @catch (__unused NSException *exception) {}
+}
+
+void AXApplyStatusBarStyle(BOOL darkContent) {
+    UIStatusBarStyle style = darkContent ? UIStatusBarStyleDarkContent
+                                         : UIStatusBarStyleLightContent;
+    if (!AXStatusBarStyleSaved) {
+        @try {
+            AXStatusBarStyleBefore = UIApplication.sharedApplication.statusBarStyle;
+            AXStatusBarStyleSaved = YES;
+        } @catch (__unused NSException *exception) {}
+    }
+    AXSetStatusBarStyle(style);
+    [UIApplication.sharedApplication.keyWindow.rootViewController
+        setNeedsStatusBarAppearanceUpdate];
+}
+
+void AXRestoreStatusBarStyle(void) {
+    if (!AXStatusBarStyleSaved) return;
+    AXStatusBarStyleSaved = NO;
+    AXSetStatusBarStyle(AXStatusBarStyleBefore);
 }
 
 #pragma mark - 玻璃弹窗

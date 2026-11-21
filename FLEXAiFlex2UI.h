@@ -47,6 +47,12 @@ FOUNDATION_EXPORT UIBarButtonItem *AXCheckmarkItem(id target, SEL action);
 // 之前那版半透明玻璃会让滚动内容一直在栏下晃动，长时间看着容易疲劳。
 FOUNDATION_EXPORT void AXApplyOpaqueNavigationBar(UINavigationBar * _Nullable bar);
 
+// 强制状态栏文字颜色跟着页面底色走。
+// 有的宿主把 UIViewControllerBasedStatusBarAppearance 关了，控制器样式会被系统忽略，
+// 这里在检测到颜色没生效时退回私有接口补齐，保证白栏上一定看得到时间/信号/电量。
+FOUNDATION_EXPORT void AXApplyStatusBarStyle(BOOL darkContent);
+FOUNDATION_EXPORT void AXRestoreStatusBarStyle(void);
+
 #pragma mark - 玻璃弹窗
 
 // 系统 UIAlertController 的观感跟页面脱节，这里用同一套玻璃卡片自绘弹窗：

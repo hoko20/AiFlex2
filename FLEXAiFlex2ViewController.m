@@ -117,7 +117,17 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self applyOpaqueNavigationBar];
+    // 顶部实底白栏，状态栏必须用深色文字，否则时间和电量会白底白字。
+    AXApplyStatusBarStyle(self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleDark);
     [self refresh];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    // 只有整个面板被收起/关掉时才交还状态栏；push 到设置页不算。
+    if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) {
+        AXRestoreStatusBarStyle();
+    }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -138,7 +148,9 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 // 顶部只有实底背景，不画默认的 hairline 分割线。
 - (UIStatusBarStyle)preferredStatusBarStyle {
-    return UIStatusBarStyleDefault;
+    return self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+        ? UIStatusBarStyleLightContent
+        : UIStatusBarStyleDarkContent;
 }
 
 #pragma mark - Layout
@@ -885,6 +897,8 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     [self.view endEditing:YES];
     void (^done)(void) = ^{
         self.minimized = YES;
+        // 面板收起后状态栏交还宿主，避免把 FLEX 的深色样式留在别人页面上。
+        AXRestoreStatusBarStyle();
         if (target) [FLEXManager.sharedManager hideExplorer];
         if (completion) completion();
     };

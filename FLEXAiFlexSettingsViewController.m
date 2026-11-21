@@ -35,7 +35,14 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     AXApplyOpaqueNavigationBar(self.navigationController.navigationBar);
+    AXApplyStatusBarStyle(self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleDark);
     [self refresh];
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    return self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+        ? UIStatusBarStyleLightContent
+        : UIStatusBarStyleDarkContent;
 }
 
 - (void)viewDidLayoutSubviews {
