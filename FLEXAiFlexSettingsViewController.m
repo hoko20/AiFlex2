@@ -34,7 +34,7 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    AXApplyOpaqueNavigationBar(self.navigationController.navigationBar);
+    AXApplyGlassNavigationBar(self.navigationController.navigationBar);
     AXApplyStatusBarStyle(self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleDark);
     [self refresh];
 }
@@ -271,7 +271,7 @@
 
 - (void)editPort {
     __weak typeof(self) weakSelf = self;
-    AXPresentAlert(self, @"监听端口", @"1024–65535，修改后自动重启服务。", AXAlertMessageStyleText,
+    AXPresentAlert(self, @"监听端口", @"1024–65535，修改后自动重启服务。若端口已被占用，会自动顺延到下一个可用端口。", AXAlertMessageStyleText,
         ^(UITextField *field) {
             field.keyboardType = UIKeyboardTypeNumberPad;
             field.text = [NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]];

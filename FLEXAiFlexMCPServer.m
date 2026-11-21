@@ -4,9 +4,11 @@
 #import "FLEXManager+Private.h"
 #import <Network/Network.h>
 #import <Security/Security.h>
+#import <UIKit/UIKit.h>
 #import <ifaddrs.h>
 #import <net/if.h>
 #import <arpa/inet.h>
+#import <errno.h>
 #import <stdlib.h>
 #import <string.h>
 
@@ -144,10 +146,15 @@ static NSString *LocalIPv4(void){
 @property(nonatomic) NSMutableSet *connections;
 @property(atomic) BOOL running;
 @property(atomic,copy) NSString *lastError;
+@property(atomic,copy) NSString *portNotice; // 端口被占自动顺延后的说明，成功后仍保留给面板展示
 @property(nonatomic) FLEXAiFlexRuntime *runtime;
 @property(nonatomic) NSUInteger generation;   // isolates stale listener callbacks after stop/restart
 @property(nonatomic) NSUInteger startAttempt; // bounded backoff for failed binds
+@property(nonatomic) NSUInteger portFallbackHops; // how many ports we auto-skipped
+@property(nonatomic) NSInteger lastBindError; // errno of the last failed bind (0 = unknown)
 - (void)accept:(nw_connection_t)connection;
+- (void)beginListening;
++ (NSString *)bindFailureText:(NSInteger)code port:(NSUInteger)port;
 - (void)read:(nw_connection_t)connection buffer:(NSMutableData *)buffer;
 - (void)process:(nw_connection_t)connection buffer:(NSMutableData *)buffer;
 - (void)handle:(NSDictionary *)request connection:(nw_connection_t)connection;
@@ -240,46 +247,111 @@ static NSString *LocalIPv4(void){
  if(server.lastError.length)return server.lastError;
  return @"正在启动";
 }
++ (NSString *)portNotice{return [self shared].portNotice;}
 - (instancetype)init{
  if((self=[super init])){_queue=dispatch_queue_create("flex.aiflex.mcp",DISPATCH_QUEUE_SERIAL);_connections=[NSMutableSet new];}
  return self;
 }
 - (void)start{
  dispatch_async(self.queue,^{
-  if(self.running)return;
-  self.lastError=@"";
-  if(self.listener){nw_listener_cancel(self.listener);self.listener=nil;}
-  // Bump generation so callbacks from any prior/cancelled listener are ignored.
-  self.generation++;
-  NSUInteger generation=self.generation;
-  nw_parameters_t parameters=nw_parameters_create_secure_tcp(NW_PARAMETERS_DISABLE_PROTOCOL,NW_PARAMETERS_DEFAULT_CONFIGURATION);
-  NSString *port=[NSString stringWithFormat:@"%lu",(unsigned long)[FLEXAiFlexMCPServer port]];
-  nw_listener_t listener=nw_listener_create_with_port(port.UTF8String,parameters);
-  if(!listener){self.lastError=@"无法创建 MCP 监听器";[self retryStartForGeneration:generation];return;}
-  nw_listener_set_queue(listener,self.queue);
-  __weak typeof(self) weak=self;
-  nw_listener_set_new_connection_handler(listener,^(nw_connection_t connection){[weak accept:connection];});
-  nw_listener_set_state_changed_handler(listener,^(nw_listener_state_t state,nw_error_t error){
-   FLEXAiFlexMCPServer *server=weak;if(!server)return;
-   if(server.generation!=generation)return; // stale callback: ignore
-   if(state==nw_listener_state_ready){server.running=YES;server.lastError=@"";server.startAttempt=0;}
-   else if(state==nw_listener_state_failed){server.running=NO;server.lastError=[NSString stringWithFormat:@"端口 %lu 无法监听",(unsigned long)[FLEXAiFlexMCPServer port]];[server retryStartForGeneration:generation];}
-   else if(state==nw_listener_state_cancelled){if(server.generation==generation)server.running=NO;}
-  });
-  self.listener=listener;
-  nw_listener_start(listener);
+  // 外部重启意味着"重新开始"：清掉上一次的失败计数。
+  // 之前这里没清零，一次瞬时端口冲突就会把计数顶到上限，
+  // 之后无论怎么点重启都直接判定"持续无法监听"，永远不会再试。
+  self.startAttempt=0;
+  self.portFallbackHops=0;
+  self.lastBindError=0;
+  self.portNotice=nil;
+  [self beginListening];
  });
 }
+
+// 必须在 queue 上调用。
+- (void)beginListening{
+ if(self.running)return;
+ self.lastError=@"";
+ if(self.listener){nw_listener_cancel(self.listener);self.listener=nil;}
+ // Bump generation so callbacks from any prior/cancelled listener are ignored.
+ self.generation++;
+ NSUInteger generation=self.generation;
+ NSUInteger port=[FLEXAiFlexMCPServer port];
+ nw_parameters_t parameters=nw_parameters_create_secure_tcp(NW_PARAMETERS_DISABLE_PROTOCOL,NW_PARAMETERS_DEFAULT_CONFIGURATION);
+ nw_listener_t listener=nw_listener_create_with_port([NSString stringWithFormat:@"%lu",(unsigned long)port].UTF8String,parameters);
+ if(!listener){
+  self.lastBindError=ENOMEM;
+  self.lastError=[NSString stringWithFormat:@"端口 %lu 无法创建监听器",(unsigned long)port];
+  [self retryStartForGeneration:generation];return;
+ }
+ nw_listener_set_queue(listener,self.queue);
+ __weak typeof(self) weak=self;
+ nw_listener_set_new_connection_handler(listener,^(nw_connection_t connection){[weak accept:connection];});
+ nw_listener_set_state_changed_handler(listener,^(nw_listener_state_t state,nw_error_t error){
+  FLEXAiFlexMCPServer *server=weak;if(!server)return;
+  if(server.generation!=generation)return; // stale callback: ignore
+  if(state==nw_listener_state_ready){
+   server.running=YES;server.lastError=@"";server.startAttempt=0;server.portFallbackHops=0;server.lastBindError=0;
+  }else if(state==nw_listener_state_failed){
+   server.running=NO;
+   // 绑定失败的真实原因在 nw_error 里：EADDRINUSE 说明端口被占，
+   // 其它码才可能是权限或参数问题。带上码值，面板就不用再猜。
+   NSInteger code=0;
+   if(error&&nw_error_get_error_domain(error)==nw_error_domain_posix)code=(NSInteger)nw_error_get_error_code(error);
+   server.lastBindError=code;
+   server.lastError=[FLEXAiFlexMCPServer bindFailureText:code port:port];
+   [server retryStartForGeneration:generation];
+  }else if(state==nw_listener_state_cancelled){
+   if(server.generation==generation)server.running=NO;
+  }
+ });
+ self.listener=listener;
+ nw_listener_start(listener);
+}
+
++ (NSString *)bindFailureText:(NSInteger)code port:(NSUInteger)port{
+ switch(code){
+  case EADDRINUSE: return [NSString stringWithFormat:@"端口 %lu 已被占用",(unsigned long)port];
+  case EACCES: return [NSString stringWithFormat:@"端口 %lu 被系统拒绝（无监听权限）",(unsigned long)port];
+  default: break;
+ }
+ if(code)return [NSString stringWithFormat:@"端口 %lu 无法监听（errno %ld）",(unsigned long)port,(long)code];
+ return [NSString stringWithFormat:@"端口 %lu 无法监听",(unsigned long)port];
+}
+
 // Bounded retry for a failed bind (e.g. port still held by an old listener during restart).
 - (void)retryStartForGeneration:(NSUInteger)generation{
- NSUInteger attempt=++self.startAttempt;
- if(attempt>4){self.lastError=[NSString stringWithFormat:@"端口 %lu 持续无法监听，请在设置中更换端口",(unsigned long)[FLEXAiFlexMCPServer port]];return;}
- __weak typeof(self) weak=self;
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*attempt*NSEC_PER_SEC)),self.queue,^{
-  FLEXAiFlexMCPServer *server=weak;if(!server||server.generation!=generation||server.running)return;
-  nw_listener_cancel(server.listener);server.listener=nil;
-  [server start];
- });
+ if(self.startAttempt<4){
+  NSUInteger attempt=++self.startAttempt;
+  __weak typeof(self) weak=self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*attempt*NSEC_PER_SEC)),self.queue,^{
+   FLEXAiFlexMCPServer *server=weak;if(!server||server.generation!=generation||server.running)return;
+   if(server.listener){nw_listener_cancel(server.listener);server.listener=nil;}
+   [server beginListening];
+  });
+  return;
+ }
+ // 重试用尽：端口确实被占死（常见于宿主里已有服务占了 8790，
+ // 或旧 listener 还没释放）。自动顺延到后面的端口，并把配置写回，
+ // 面板上的访问地址会跟着变成新端口，不用用户手动去设置里改。
+ if((self.lastBindError==EADDRINUSE||self.lastBindError==0)&&self.portFallbackHops<10){
+  NSUInteger current=[FLEXAiFlexMCPServer port];
+  NSUInteger next=current+1;
+  if(next>=1024&&next<=65535){
+   self.portFallbackHops++;
+   self.startAttempt=0;
+   [NSUserDefaults.standardUserDefaults setInteger:next forKey:DXMCPPortKey];
+   Sync();
+   self.portNotice=[NSString stringWithFormat:@"端口 %lu 被占用，已自动改用 %lu",
+                    (unsigned long)current,(unsigned long)next];
+   self.lastError=self.portNotice;
+   __weak typeof(self) weak=self;
+   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),self.queue,^{
+    FLEXAiFlexMCPServer *server=weak;if(!server||server.generation!=generation||server.running)return;
+    [server beginListening];
+   });
+   return;
+  }
+ }
+ self.lastError=[NSString stringWithFormat:@"端口 %lu 持续无法监听，请在设置中更换端口",
+                 (unsigned long)[FLEXAiFlexMCPServer port]];
 }
 - (void)stop{
  dispatch_async(self.queue,^{
@@ -525,4 +597,15 @@ static NSString *LocalIPv4(void){
 __attribute__((constructor)) static void FLEXAiFlexMCPBoot(void){
  if(![FLEXAiFlexMCPServer isEnabled])return;
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[[FLEXAiFlexMCPServer shared] start];});
+ // 回到前台时监听常常已经被系统回收（listener cancelled），running 变 NO 后
+ // 没有任何路径再拉起来，面板就停在"无法监听"。这里只在没跑起来时补一次自愈，
+ // 不会打断正在工作的服务。
+ [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                 object:nil
+                                                  queue:NSOperationQueue.mainQueue
+                                             usingBlock:^(__unused NSNotification *note){
+  FLEXAiFlexMCPServer *server=[FLEXAiFlexMCPServer shared];
+  if(![FLEXAiFlexMCPServer isEnabled]||server.running)return;
+  [server start];
+ }];
 }

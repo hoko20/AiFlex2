@@ -361,27 +361,19 @@ UIBarButtonItem *AXCheckmarkItem(id target, SEL action) {
 
 #pragma mark - 顶部栏
 
-static UIImage *AXSolidImage(UIColor *color) {
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
-        initWithSize:CGSizeMake(1, 1)];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        [color setFill];
-        UIRectFill(CGRectMake(0, 0, 1, 1));
-    }];
-}
-
-// 实底系统背景：不做模糊、不画 hairline。
-// iOS 26 上光靠 UINavigationBarAppearance 有时会被系统玻璃外观盖掉，
-// 所以再铺一张纯色背景图 + barTintColor 兜底，确保栏是实心的。
-void AXApplyOpaqueNavigationBar(UINavigationBar *bar) {
+// 半透明 + 模糊：不画 hairline，内容从栏下透出。
+// 底色只留很低的不透明度，主要靠 UIGlassEffect / 薄材质提供模糊，
+// 这样滚动手感是「内容在玻璃下移动」，而不是一块死板色块。
+void AXApplyGlassNavigationBar(UINavigationBar *bar) {
     if (!bar) return;
-    UIColor *background = UIColor.systemBackgroundColor;
 
     UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = background;
+    [appearance configureWithTransparentBackground];
     appearance.shadowColor = UIColor.clearColor;
-    appearance.backgroundEffect = nil;
+    appearance.backgroundColor = [UIColor.systemBackgroundColor colorWithAlphaComponent:0.22];
+    UIVisualEffect *effect = AXGlassEffect();
+    if (!effect) effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    appearance.backgroundEffect = effect;
     appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
     appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
 
@@ -390,9 +382,10 @@ void AXApplyOpaqueNavigationBar(UINavigationBar *bar) {
     bar.scrollEdgeAppearance = appearance;
     if (@available(iOS 15.0, *)) bar.compactScrollEdgeAppearance = appearance;
 
-    bar.translucent = NO;
-    bar.barTintColor = background;
-    [bar setBackgroundImage:AXSolidImage(background) forBarMetrics:UIBarMetricsDefault];
+    // 清掉实底时代留下的兜底：纯色背景图或 barTintColor 会直接盖住模糊层。
+    bar.translucent = YES;
+    bar.barTintColor = nil;
+    [bar setBackgroundImage:nil forBarMetrics:UIBarMetricsDefault];
     bar.shadowImage = [UIImage new];
 }
 

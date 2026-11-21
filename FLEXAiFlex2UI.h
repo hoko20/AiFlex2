@@ -43,9 +43,9 @@ FOUNDATION_EXPORT UIStackView * _Nullable AXSectionView(NSString * _Nullable tit
 FOUNDATION_EXPORT AXGlassCard *AXCardWithRows(NSArray<UIView *> *rows, CGFloat radius);
 FOUNDATION_EXPORT UIBarButtonItem *AXCheckmarkItem(id target, SEL action);
 
-// 顶部栏：实底系统背景，不叠模糊也不再画 hairline。
-// 之前那版半透明玻璃会让滚动内容一直在栏下晃动，长时间看着容易疲劳。
-FOUNDATION_EXPORT void AXApplyOpaqueNavigationBar(UINavigationBar * _Nullable bar);
+// 顶部栏：半透明 + 模糊（iOS 26 用 UIGlassEffect，低版本退回薄材质），
+// 不画 hairline，滚动内容从栏下透出来。
+FOUNDATION_EXPORT void AXApplyGlassNavigationBar(UINavigationBar * _Nullable bar);
 
 // 强制状态栏文字颜色跟着页面底色走。
 // 有的宿主把 UIViewControllerBasedStatusBarAppearance 关了，控制器样式会被系统忽略，

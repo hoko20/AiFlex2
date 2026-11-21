@@ -26,6 +26,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 @property (nonatomic, strong) UILabel *endpointLabel;
 @property (nonatomic, strong) UILabel *tokenLabel;
 @property (nonatomic, strong) UILabel *heroSubtitle;
+@property (nonatomic, strong) UILabel *heroHint;
 
 @property (nonatomic, strong) AXRowView *contextObjectRow;
 @property (nonatomic, strong) AXRowView *contextReportRow;
@@ -33,7 +34,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 @property (nonatomic, copy) NSArray<UISwitch *> *permissionSwitches;
 @property (nonatomic, copy) NSArray<AXRowView *> *toolRowViews;
 @property (nonatomic, strong) UILabel *permissionFootnote;
-- (void)applyOpaqueNavigationBar;
+- (void)applyGlassNavigationBar;
 - (void)showBuildFailure:(NSString *)reason;
 @end
 
@@ -116,8 +117,8 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self applyOpaqueNavigationBar];
-    // 顶部实底白栏，状态栏必须用深色文字，否则时间和电量会白底白字。
+    [self applyGlassNavigationBar];
+    // 顶部是半透明玻璃，状态栏文字跟着页面深浅走，避免浅色底上白字看不清。
     AXApplyStatusBarStyle(self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleDark);
     [self refresh];
 }
@@ -133,7 +134,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     // 滚动视图铺满全屏、用安全区补内边距：内容首行落在顶部栏下方，
-    // 滚动时从实底栏底下穿过，被栏挡住而不是透出来。
+    // 滚动时从玻璃栏底下穿过，被模糊层透出来。
     UIEdgeInsets insets = UIEdgeInsetsMake(self.view.safeAreaInsets.top, 0,
                                            self.view.safeAreaInsets.bottom, 0);
     if (UIEdgeInsetsEqualToEdgeInsets(self.scrollView.contentInset, insets)) return;
@@ -141,12 +142,12 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     self.scrollView.verticalScrollIndicatorInsets = insets;
 }
 
-- (void)applyOpaqueNavigationBar {
+- (void)applyGlassNavigationBar {
     UINavigationBar *bar = self.navigationController.navigationBar;
-    if (bar) AXApplyOpaqueNavigationBar(bar);
+    if (bar) AXApplyGlassNavigationBar(bar);
 }
 
-// 顶部只有实底背景，不画默认的 hairline 分割线。
+// 顶部是半透明玻璃，不画默认的 hairline 分割线。
 - (UIStatusBarStyle)preferredStatusBarStyle {
     return self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
         ? UIStatusBarStyleLightContent
@@ -258,6 +259,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     head.alignment = UIStackViewAlignmentTop;
 
     UILabel *hint = [self footnoteLabel:@"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行"];
+    self.heroHint = hint;
 
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[head, [self buildFields], hint]];
     stack.axis = UILayoutConstraintAxisVertical;
@@ -569,6 +571,15 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     self.statusChip.backgroundColor = [tint colorWithAlphaComponent:0.16];
 
     self.endpointLabel.text = [FLEXAiFlexMCPServer endpoint];
+    // 端口被占自动顺延过就把原因写在脚注上，避免用户以为端口被无故改掉。
+    NSString *notice = [FLEXAiFlexMCPServer portNotice];
+    if (notice.length) {
+        self.heroHint.text = notice;
+        self.heroHint.textColor = UIColor.systemOrangeColor;
+    } else {
+        self.heroHint.text = @"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行";
+        self.heroHint.textColor = UIColor.tertiaryLabelColor;
+    }
     if ([FLEXAiFlexMCPServer authRequired]) {
         NSString *token = [FLEXAiFlexMCPServer token];
         self.tokenLabel.text = token.length > 4

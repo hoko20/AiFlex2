@@ -27,6 +27,8 @@
 + (void)setTracingEnabled:(BOOL)enabled;
 + (NSString *)endpoint;
 + (NSString *)status;
+// 端口被占用并自动顺延时的说明（正常情况为 nil）。
++ (NSString *)portNotice;
 - (void)start;
 - (void)stop;
 @end
