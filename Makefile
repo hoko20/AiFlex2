@@ -95,7 +95,7 @@ include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/library.mk
 
 after-stage::
-	@find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" -exec codesign --force --sign - {} \;
+	@find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" -exec ldid -S {} \;
 	@mkdir -p "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex2"
 	@cp ThirdPartyNotices/NOTICE ThirdPartyNotices/DylixTouch-APACHE-2.0.txt "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex2/"
 
