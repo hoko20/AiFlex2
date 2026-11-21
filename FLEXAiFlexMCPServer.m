@@ -318,7 +318,10 @@ static NSString *LocalIPv4(void){
 
 // Bounded retry for a failed bind (e.g. port still held by an old listener during restart).
 - (void)retryStartForGeneration:(NSUInteger)generation{
- if(self.startAttempt<4){
+ // 端口明确被占用时，等待重试没有意义（占用方不会自己让开），
+ // 直接顺延；只有 errno 不明或权限类错误才退避重试。
+ BOOL occupied=(self.lastBindError==EADDRINUSE);
+ if(!occupied&&self.startAttempt<4){
   NSUInteger attempt=++self.startAttempt;
   __weak typeof(self) weak=self;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*attempt*NSEC_PER_SEC)),self.queue,^{
@@ -328,10 +331,9 @@ static NSString *LocalIPv4(void){
   });
   return;
  }
- // 重试用尽：端口确实被占死（常见于宿主里已有服务占了 8790，
- // 或旧 listener 还没释放）。自动顺延到后面的端口，并把配置写回，
- // 面板上的访问地址会跟着变成新端口，不用用户手动去设置里改。
- if((self.lastBindError==EADDRINUSE||self.lastBindError==0)&&self.portFallbackHops<10){
+ // 顺延到后面的端口，并把配置写回，面板上的访问地址会跟着变成新端口，
+ // 不用用户手动去设置里改。
+ if((occupied||self.lastBindError==0)&&self.portFallbackHops<10){
   NSUInteger current=[FLEXAiFlexMCPServer port];
   NSUInteger next=current+1;
   if(next>=1024&&next<=65535){
