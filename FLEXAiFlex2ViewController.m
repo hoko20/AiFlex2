@@ -290,7 +290,7 @@ static UIVisualEffect *AXGlassEffect(void) {
 @property (nonatomic) BOOL uiTransitioning;
 
 @property (nonatomic, strong) UIScrollView *scrollView;
-@property (nonatomic, strong) UIRefreshControl *refreshControl;
+@property (nonatomic, strong) UIRefreshControl *axRefreshControl;
 
 @property (nonatomic, strong) UIView *statusChip;
 @property (nonatomic, strong) UIView *statusDot;
@@ -366,9 +366,9 @@ static UIVisualEffect *AXGlassEffect(void) {
         [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
 
-    self.refreshControl = [UIRefreshControl new];
-    [self.refreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
-    [self.scrollView addSubview:self.refreshControl];
+    self.axRefreshControl = [UIRefreshControl new];
+    [self.axRefreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
+    [self.scrollView addSubview:self.axRefreshControl];
 
     [self buildContent];
     [self refresh];
@@ -875,7 +875,7 @@ static UIVisualEffect *AXGlassEffect(void) {
                  tint:on ? UIColor.systemGreenColor : UIColor.tertiaryLabelColor];
     }
 
-    [self.refreshControl endRefreshing];
+    [self.axRefreshControl endRefreshing];
 }
 
 - (void)syncRuntimeContext {
