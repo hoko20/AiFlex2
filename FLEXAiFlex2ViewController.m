@@ -358,8 +358,10 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
                      value:(UILabel *)value
                     button:(NSString *)buttonSymbol
                     action:(SEL)action {
-    UIView *row = [UIView new];
+    UIControl *row = [UIControl new];
     row.translatesAutoresizingMaskIntoConstraints = NO;
+    // 整行都能点：文字区不再单独挂手势，交给 UIControl 统一收事件。
+    [row addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
 
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol
         withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]]];
@@ -377,8 +379,9 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     texts.axis = UILayoutConstraintAxisVertical;
     texts.spacing = 2;
     texts.translatesAutoresizingMaskIntoConstraints = NO;
+    // 纯展示：关掉自身交互，触摸穿透到整行的 UIControl。
+    texts.userInteractionEnabled = NO;
     [row addSubview:texts];
-    [texts addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:action]];
 
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.translatesAutoresizingMaskIntoConstraints = NO;

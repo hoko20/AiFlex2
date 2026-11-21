@@ -236,6 +236,19 @@ UIVisualEffect *AXGlassEffect(void) {
     if (self.onTap) self.onTap();
 }
 
+// 行内的文字栈、值标签、箭头都是 UIControl 的子视图，默认会把触摸吞在各自身上，
+// 结果只有行边距能点到。这里统一把落点收回到整行，只把开关自己的区域放行。
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (!hit || hit == self) return hit;
+    UISwitch *switchView = self.toggle;
+    if (switchView && !switchView.hidden && switchView.userInteractionEnabled) {
+        CGPoint inSwitch = [switchView convertPoint:point fromView:self];
+        if ([switchView pointInside:inSwitch withEvent:event]) return switchView;
+    }
+    return self;
+}
+
 - (void)toggleFired {
     if (self.onToggle) self.onToggle(self.toggle.isOn);
 }
