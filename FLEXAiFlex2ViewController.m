@@ -80,6 +80,13 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     [self refresh];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // Re-apply after the present animation completes and FLEXWindow has become key;
+    // UIKit may restyle bar/buttons from the global proxy during the transition.
+    [self configureStableNavigationAppearance];
+}
+
 // 首次 present 面板时 FLEX 的 explorerWindow 可能尚未成为 keyWindow，宿主 App 的
 // 全局 UIBarButtonItem/UINavigationBar appearance 会泄漏进这个裸 UINavigationController，
 // 造成按钮退化成纯文字、透明导航栏压住标题、状态栏变白字；第二次打开因复用了已稳定的
@@ -93,6 +100,10 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         [appearance configureWithOpaqueBackground];
         appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
         appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
+        UIBarButtonItemAppearance *button = [[UIBarButtonItemAppearance alloc] init];
+        [button configureWithDefaultBackground];
+        appearance.buttonAppearance = button;
+        appearance.doneButtonAppearance = button;
         nav.navigationBar.standardAppearance = appearance;
         nav.navigationBar.scrollEdgeAppearance = appearance;
         nav.navigationBar.compactAppearance = appearance;

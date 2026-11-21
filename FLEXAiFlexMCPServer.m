@@ -145,6 +145,8 @@ static NSString *LocalIPv4(void){
 @property(atomic) BOOL running;
 @property(atomic,copy) NSString *lastError;
 @property(nonatomic) FLEXAiFlexRuntime *runtime;
+@property(nonatomic) NSUInteger generation;   // isolates stale listener callbacks after stop/restart
+@property(nonatomic) NSUInteger startAttempt; // bounded backoff for failed binds
 - (void)accept:(nw_connection_t)connection;
 - (void)read:(nw_connection_t)connection buffer:(NSMutableData *)buffer;
 - (void)process:(nw_connection_t)connection buffer:(NSMutableData *)buffer;
@@ -155,6 +157,7 @@ static NSString *LocalIPv4(void){
 - (void)call:(NSString *)name arguments:(NSDictionary *)arguments completion:(void (^)(NSDictionary *result))completion;
 - (void)respond:(nw_connection_t)connection status:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body;
 - (void)close:(nw_connection_t)connection;
+- (void)retryStartForGeneration:(NSUInteger)generation;
 @end
 @implementation FLEXAiFlexMCPServer
 + (instancetype)shared{
@@ -233,8 +236,9 @@ static NSString *LocalIPv4(void){
 + (NSString *)status{
  FLEXAiFlexMCPServer *server=[self shared];
  if(![self isEnabled])return @"未开启";
+ if(server.running)return @"运行中";
  if(server.lastError.length)return server.lastError;
- return server.running?@"运行中":@"正在启动";
+ return @"正在启动";
 }
 - (instancetype)init{
  if((self=[super init])){_queue=dispatch_queue_create("flex.aiflex.mcp",DISPATCH_QUEUE_SERIAL);_connections=[NSMutableSet new];}
@@ -245,25 +249,41 @@ static NSString *LocalIPv4(void){
   if(self.running)return;
   self.lastError=@"";
   if(self.listener){nw_listener_cancel(self.listener);self.listener=nil;}
+  // Bump generation so callbacks from any prior/cancelled listener are ignored.
+  self.generation++;
+  NSUInteger generation=self.generation;
   nw_parameters_t parameters=nw_parameters_create_secure_tcp(NW_PARAMETERS_DISABLE_PROTOCOL,NW_PARAMETERS_DEFAULT_CONFIGURATION);
   NSString *port=[NSString stringWithFormat:@"%lu",(unsigned long)[FLEXAiFlexMCPServer port]];
   nw_listener_t listener=nw_listener_create_with_port(port.UTF8String,parameters);
-  if(!listener){self.lastError=@"无法创建 MCP 监听器";return;}
+  if(!listener){self.lastError=@"无法创建 MCP 监听器";[self retryStartForGeneration:generation];return;}
   nw_listener_set_queue(listener,self.queue);
   __weak typeof(self) weak=self;
   nw_listener_set_new_connection_handler(listener,^(nw_connection_t connection){[weak accept:connection];});
   nw_listener_set_state_changed_handler(listener,^(nw_listener_state_t state,nw_error_t error){
    FLEXAiFlexMCPServer *server=weak;if(!server)return;
-   if(state==nw_listener_state_ready){server.running=YES;server.lastError=@"";}
-   else if(state==nw_listener_state_failed){server.running=NO;server.lastError=[NSString stringWithFormat:@"端口 %lu 无法监听",(unsigned long)[FLEXAiFlexMCPServer port]];}
-   else if(state==nw_listener_state_cancelled){server.running=NO;}
+   if(server.generation!=generation)return; // stale callback: ignore
+   if(state==nw_listener_state_ready){server.running=YES;server.lastError=@"";server.startAttempt=0;}
+   else if(state==nw_listener_state_failed){server.running=NO;server.lastError=[NSString stringWithFormat:@"端口 %lu 无法监听",(unsigned long)[FLEXAiFlexMCPServer port]];[server retryStartForGeneration:generation];}
+   else if(state==nw_listener_state_cancelled){if(server.generation==generation)server.running=NO;}
   });
   self.listener=listener;
   nw_listener_start(listener);
  });
 }
+// Bounded retry for a failed bind (e.g. port still held by an old listener during restart).
+- (void)retryStartForGeneration:(NSUInteger)generation{
+ NSUInteger attempt=++self.startAttempt;
+ if(attempt>4){self.lastError=[NSString stringWithFormat:@"端口 %lu 持续无法监听，请在设置中更换端口",(unsigned long)[FLEXAiFlexMCPServer port]];return;}
+ __weak typeof(self) weak=self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*attempt*NSEC_PER_SEC)),self.queue,^{
+  FLEXAiFlexMCPServer *server=weak;if(!server||server.generation!=generation||server.running)return;
+  nw_listener_cancel(server.listener);server.listener=nil;
+  [server start];
+ });
+}
 - (void)stop{
  dispatch_async(self.queue,^{
+  self.generation++; // invalidate in-flight listener callbacks
   if(self.listener){nw_listener_cancel(self.listener);self.listener=nil;}
   for(nw_connection_t connection in self.connections.allObjects)nw_connection_cancel(connection);
   [self.connections removeAllObjects];self.running=NO;
@@ -291,6 +311,14 @@ static NSString *LocalIPv4(void){
   if(state==nw_connection_state_failed||state==nw_connection_state_cancelled)[weak close:connection];
  });
  nw_connection_start(connection);
+ // Watchdog: a client that connects but never completes a request must not hold
+ // one of the 8 slots forever. close: is idempotent and a normal request replies
+ // and closes well within the 45s client timeout, so 60s only targets dead peers.
+ __weak typeof(self) weakServer=self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(60*NSEC_PER_SEC)),self.queue,^{
+  FLEXAiFlexMCPServer *server=weakServer;if(!server)return;
+  if([server.connections containsObject:connection])[server close:connection];
+ });
  [self read:connection buffer:[NSMutableData data]];
 }
 - (void)read:(nw_connection_t)connection buffer:(NSMutableData *)buffer{
