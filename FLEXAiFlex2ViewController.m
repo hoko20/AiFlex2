@@ -269,7 +269,12 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == AXSectionPermissions) {
-        return @"授权保护：开启后必须携带 Bearer 令牌；关闭后同局域网可直接连接，请仅在可信网络使用。\n敏感读取：允许头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n界面控制：允许点击、输入、滚动、手势和高亮；会真实改变 App 状态。\n脚本执行：允许在 WKWebView 中运行 JavaScript，只影响网页，但可能破坏页面状态。\n方法追踪：运行期替换指定方法并记录调用，可能导致崩溃或卡顿，默认关闭。";
+        NSString *(^state)(BOOL) = ^NSString *(BOOL on){ return on ? @"开" : @"关"; };
+        NSString *summary = [NSString stringWithFormat:@"当前状态：授权保护 %@ · 敏感读取 %@ · 界面控制 %@ · 脚本执行 %@ · 方法追踪 %@",
+            state([FLEXAiFlexMCPServer authRequired]), state([FLEXAiFlexMCPServer sensitiveEnabled]),
+            state([FLEXAiFlexMCPServer controlEnabled]), state([FLEXAiFlexMCPServer scriptEnabled]),
+            state([FLEXAiFlexMCPServer tracingEnabled])];
+        return [NSString stringWithFormat:@"%@\n\n授权保护：开启后必须携带 Bearer 令牌；关闭后同局域网可直接连接，请仅在可信网络使用。\n敏感读取：允许头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n界面控制：允许点击、输入、滚动、手势和高亮；会真实改变 App 状态。\n脚本执行：允许在 WKWebView 中运行 JavaScript，只影响网页，但可能破坏页面状态。\n方法追踪：运行期替换指定方法并记录调用，可能导致崩溃或卡顿，默认关闭。", summary];
     }
     if (section == AXSectionTools) {
         return @"工具组关闭后，对应工具不会出现在 MCP tools/list 中。";
@@ -280,7 +285,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case AXSectionContext: return 3;
-        case AXSectionActions: return 4;
+        case AXSectionActions: return 5;
         case AXSectionPermissions: return 5;
         case AXSectionTools: return [self toolRows].count;
         default: return 1;
@@ -299,6 +304,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
         cell.textLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
         if (indexPath.section == AXSectionUsage) {
+            cell.imageView.image = nil;
             cell.textLabel.text = @"MCP 客户端";
             cell.textLabel.font = [UIFont systemFontOfSize:15];
             cell.textLabel.textColor = UIColor.labelColor;
@@ -314,6 +320,8 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         BOOL enabled = [tool[@"enabled"] boolValue];
         cell.textLabel.textColor = enabled ? UIColor.labelColor : UIColor.secondaryLabelColor;
         cell.detailTextLabel.textColor = enabled ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
+        cell.imageView.image = [UIImage systemImageNamed:enabled ? @"checkmark.circle.fill" : @"circle"];
+        cell.imageView.tintColor = enabled ? UIColor.systemGreenColor : UIColor.tertiaryLabelColor;
         return cell;
     }
 
@@ -349,16 +357,13 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 
     if (indexPath.section == AXSectionActions) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        if (indexPath.row == 0) {
-            cell.textLabel.text = @"复制 MCP 客户端配置";
-        } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"服务设置";
-        } else if (indexPath.row == 2) {
-            cell.textLabel.text = [FLEXAiFlexMCPServer isEnabled] ? @"重启 MCP 服务" : @"开启 MCP 服务";
-        } else {
-            cell.textLabel.text = @"收起面板（回到 App）";
-            cell.textLabel.textColor = UIColor.systemBlueColor;
-        }
+        NSArray *icons = @[@"doc.on.doc", @"bolt.fill", @"gearshape", @"arrow.triangle.2.circlepath", @"chevron.down"];
+        NSArray *labels = @[@"复制 MCP 客户端配置", @"一键开启常用工具组", @"服务设置",
+            [FLEXAiFlexMCPServer isEnabled] ? @"重启 MCP 服务" : @"开启 MCP 服务", @"收起面板（回到 App）"];
+        cell.imageView.image = [UIImage systemImageNamed:icons[indexPath.row]];
+        cell.imageView.tintColor = indexPath.row == 1 ? UIColor.systemOrangeColor : UIColor.systemBlueColor;
+        cell.textLabel.text = labels[indexPath.row];
+        cell.textLabel.textColor = indexPath.row == 4 ? UIColor.systemBlueColor : UIColor.labelColor;
         return cell;
     }
 
@@ -449,8 +454,9 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     }
     if (indexPath.section == AXSectionActions) {
         if (indexPath.row == 0) [self copyClientConfiguration];
-        else if (indexPath.row == 1) [self openSettings];
-        else if (indexPath.row == 2) [self restartService];
+        else if (indexPath.row == 1) [self enableAllGroupsTapped];
+        else if (indexPath.row == 2) [self openSettings];
+        else if (indexPath.row == 3) [self restartService];
         else [self collapseTapped];
     }
 }
@@ -476,6 +482,25 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 }
 
 #pragma mark - Actions
+
+- (void)enableAllGroupsTapped {
+    BOOL allOn = [FLEXAiFlexMCPServer sensitiveEnabled] && [FLEXAiFlexMCPServer controlEnabled];
+    if (allOn) {
+        [self toast:@"常用工具组已开启"];
+        return;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"一键开启常用工具组？"
+        message:@"将同时开启「敏感读取」与「界面控制」两组工具，让连接上的 AI 能读取现场并操作界面。\n\n「脚本执行」与「方法追踪」风险较高，保持关闭，仍需在下方授权区单独开启。开启后请重新发现工具。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"开启" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [FLEXAiFlexMCPServer setSensitiveEnabled:YES];
+        [FLEXAiFlexMCPServer setControlEnabled:YES];
+        [self refresh];
+        [self toast:@"已开启敏感读取与界面控制，请在 AI 端重新发现工具"];
+    }]];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
 
 - (void)copyClientConfiguration {
     NSString *url = [FLEXAiFlexMCPServer endpoint];

@@ -120,8 +120,8 @@
  }
  if(indexPath.section==2&&indexPath.row==0){
   NSString *url=[FLEXAiFlexMCPServer endpoint],*json;
-  if([FLEXAiFlexMCPServer authRequired])json=[NSString stringWithFormat:@"{\"mcpServers\":{\"flex\":{\"type\":\"http\",\"url\":\"%@\",\"headers\":{\"Authorization\":\"Bearer %@\"}}}}",url,[FLEXAiFlexMCPServer token]];
-  else json=[NSString stringWithFormat:@"{\"mcpServers\":{\"flex\":{\"type\":\"http\",\"url\":\"%@\"}}}",url];
+  if([FLEXAiFlexMCPServer authRequired])json=[NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\",\"headers\":{\"Authorization\":\"Bearer %@\"}}}}",url,[FLEXAiFlexMCPServer token]];
+  else json=[NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\"}}}",url];
   UIPasteboard.generalPasteboard.string=json;
   [self toast:@"已复制 MCP 客户端配置"];return;
  }

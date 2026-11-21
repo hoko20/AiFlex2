@@ -8,6 +8,7 @@
 #import <net/if.h>
 #import <arpa/inet.h>
 #import <stdlib.h>
+#import <string.h>
 
 static NSString *const DXMCPServiceKey=@"FLEXAiFlexMCP.enabled";
 static NSString *const DXMCPPortKey=@"FLEXAiFlexMCP.port";
@@ -15,6 +16,9 @@ static NSString *const DXMCPTokenKey=@"FLEXAiFlexMCP.token";
 static NSString *const DXMCPAuthKey=@"FLEXAiFlexMCP.requireToken";
 static NSString *const DXMCPGroupPrefix=@"FLEXAiFlexMCP.group.";
 static NSString *const DXMCPVersion=@"2025-06-18";
+// Persist grants immediately: a token lazily generated at first copy must not
+// be lost if the host app is killed shortly after, or copied credentials 401.
+static void Sync(void){[NSUserDefaults.standardUserDefaults synchronize];}
 
 static NSDictionary *HTTPJSON(NSInteger status,NSDictionary *json,NSDictionary *headers){
  NSData *data=[NSJSONSerialization dataWithJSONObject:json options:0 error:nil];
@@ -106,9 +110,12 @@ static BOOL TypeMatches(NSString *type,id value){
  return [value isKindOfClass:NSNumber.class];
 }
 static BOOL Same(NSString *left,NSString *right){
- if(left.length!=right.length)return NO;
- const char *a=left.UTF8String,*b=right.UTF8String;unsigned char diff=0;
- for(NSUInteger i=0;i<left.length;i++)diff|=(unsigned char)(a[i]^b[i]);
+ const char *a=left.UTF8String,*b=right.UTF8String;
+ if(!a||!b)return NO;
+ size_t length=strlen(a);
+ if(length!=strlen(b))return NO;
+ unsigned char diff=0;
+ for(size_t i=0;i<length;i++)diff|=(unsigned char)(a[i]^b[i]);
  return diff==0;
 }
 static NSString *RandomToken(void){
@@ -168,7 +175,7 @@ static NSString *LocalIPv4(void){
 + (void)setAuthRequired:(BOOL)required{[NSUserDefaults.standardUserDefaults setBool:required forKey:DXMCPAuthKey];}
 + (NSString *)token{
  NSString *token=[NSUserDefaults.standardUserDefaults stringForKey:DXMCPTokenKey];
- if(!token.length){token=RandomToken();[NSUserDefaults.standardUserDefaults setObject:token forKey:DXMCPTokenKey];}
+ if(!token.length){token=RandomToken();[NSUserDefaults.standardUserDefaults setObject:token forKey:DXMCPTokenKey];Sync();}
  return token;
 }
 + (BOOL)setToken:(NSString *)token{
@@ -180,28 +187,28 @@ static NSString *LocalIPv4(void){
  return YES;
 }
 + (NSString *)rotateToken{
- NSString *token=RandomToken();[NSUserDefaults.standardUserDefaults setObject:token forKey:DXMCPTokenKey];return token;
+ NSString *token=RandomToken();[NSUserDefaults.standardUserDefaults setObject:token forKey:DXMCPTokenKey];Sync();return token;
 }
 + (BOOL)sensitiveEnabled{
  id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"sensitive"]];
  return stored?[stored boolValue]:NO;
 }
-+ (void)setSensitiveEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"sensitive"]];}
++ (void)setSensitiveEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"sensitive"]];Sync();}
 + (BOOL)controlEnabled{
  id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"control"]];
  return stored?[stored boolValue]:NO;
 }
-+ (void)setControlEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"control"]];}
++ (void)setControlEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"control"]];Sync();}
 + (BOOL)scriptEnabled{
  id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"script"]];
  return stored?[stored boolValue]:NO;
 }
-+ (void)setScriptEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"script"]];}
++ (void)setScriptEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"script"]];Sync();}
 + (BOOL)tracingEnabled{
  id stored=[NSUserDefaults.standardUserDefaults objectForKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];
  return stored?[stored boolValue]:NO;
 }
-+ (void)setTracingEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];}
++ (void)setTracingEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];Sync();}
 + (NSString *)endpoint{return [NSString stringWithFormat:@"http://%@:%lu/mcp",LocalIPv4(),(unsigned long)[self port]];}
 + (NSString *)status{
  FLEXAiFlexMCPServer *server=[self shared];
