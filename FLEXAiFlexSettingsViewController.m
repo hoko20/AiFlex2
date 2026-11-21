@@ -34,7 +34,17 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    AXApplyGlassNavigationBar(self.navigationController.navigationBar);
     [self refresh];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UIEdgeInsets insets = UIEdgeInsetsMake(self.view.safeAreaInsets.top, 0,
+                                           self.view.safeAreaInsets.bottom, 0);
+    if (UIEdgeInsetsEqualToEdgeInsets(self.scrollView.contentInset, insets)) return;
+    self.scrollView.contentInset = insets;
+    self.scrollView.verticalScrollIndicatorInsets = insets;
 }
 
 - (void)done {
@@ -180,10 +190,10 @@
         _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
         [self.view addSubview:_scrollView];
         [NSLayoutConstraint activateConstraints:@[
-            [_scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+            [_scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
             [_scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
             [_scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-            [_scrollView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor]
+            [_scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
         ]];
     }
     return _scrollView;
@@ -253,60 +263,57 @@
 }
 
 - (void)editPort {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"监听端口"
-                                                                   message:@"1024–65535，修改后自动重启服务。"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.keyboardType = UIKeyboardTypeNumberPad;
-        field.text = [NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]];
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        NSUInteger port = [alert.textFields.firstObject.text integerValue];
-        if (port < 1024 || port > 65535) {
-            [weakSelf toast:@"端口需在 1024–65535 之间"];
-            return;
-        }
-        [FLEXAiFlexMCPServer setPort:port];
-        if ([FLEXAiFlexMCPServer isEnabled]) {
-            [[FLEXAiFlexMCPServer shared] stop];
-            [[FLEXAiFlexMCPServer shared] start];
-        }
-        [weakSelf reloadSoon];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    AXPresentAlert(self, @"监听端口", @"1024–65535，修改后自动重启服务。", AXAlertMessageStyleText,
+        ^(UITextField *field) {
+            field.keyboardType = UIKeyboardTypeNumberPad;
+            field.text = [NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]];
+        }, @[
+        [AXAlertButton buttonWithTitle:@"保存" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            NSUInteger port = [alert.text integerValue];
+            if (port < 1024 || port > 65535) {
+                [weakSelf toast:@"端口需在 1024–65535 之间"];
+                return;
+            }
+            [FLEXAiFlexMCPServer setPort:port];
+            if ([FLEXAiFlexMCPServer isEnabled]) {
+                [[FLEXAiFlexMCPServer shared] stop];
+                [[FLEXAiFlexMCPServer shared] start];
+            }
+            [weakSelf reloadSoon];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)editEndpoint {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义访问地址"
-        message:@"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用当前配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = [FLEXAiFlexMCPServer endpointHost];
-        field.placeholder = @"IP 或域名，如 127.0.0.1";
-        field.keyboardType = UIKeyboardTypeURL;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"本地地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];
-        [weakSelf reloadSoon];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"局域网地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];
-        [weakSelf reloadSoon];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        if (![FLEXAiFlexMCPServer setEndpointHost:alert.textFields.firstObject.text]) {
-            [weakSelf toast:@"地址格式不正确"];
-            return;
-        }
-        [weakSelf reloadSoon];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    AXPresentAlert(self, @"自定义访问地址",
+        @"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用当前配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。",
+        AXAlertMessageStyleText, ^(UITextField *field) {
+            field.text = [FLEXAiFlexMCPServer endpointHost];
+            field.placeholder = @"IP 或域名，如 127.0.0.1";
+            field.keyboardType = UIKeyboardTypeURL;
+            field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            field.autocorrectionType = UITextAutocorrectionTypeNo;
+        }, @[
+        [AXAlertButton buttonWithTitle:@"保存" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            if (![FLEXAiFlexMCPServer setEndpointHost:alert.text]) {
+                [weakSelf toast:@"地址格式不正确"];
+                return;
+            }
+            [weakSelf reloadSoon];
+        }],
+        [AXAlertButton buttonWithTitle:@"本地地址" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];
+            [weakSelf reloadSoon];
+        }],
+        [AXAlertButton buttonWithTitle:@"局域网地址" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];
+            [weakSelf reloadSoon];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)copyToken {
@@ -315,12 +322,14 @@
         return;
     }
     NSString *token = [FLEXAiFlexMCPServer token];
-    UIPasteboard.generalPasteboard.string = token ?: @"";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"访问令牌"
-                                                                   message:token
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    AXPresentAlert(self, @"访问令牌", token ?: @"", AXAlertMessageStyleCode, nil, @[
+        [AXAlertButton buttonWithTitle:@"复制" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            UIPasteboard.generalPasteboard.string = token ?: @"";
+            [weakSelf toast:@"已复制访问令牌"];
+        }],
+        [AXAlertButton buttonWithTitle:@"关闭" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)editCustomToken {
@@ -328,28 +337,26 @@
         [self toast:@"当前已关闭授权保护"];
         return;
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义授权码"
-                                                                   message:@"6–64 位字母、数字、点、下划线或短横线。"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"输入授权码";
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        if (![FLEXAiFlexMCPServer setToken:alert.textFields.firstObject.text]) {
-            [weakSelf toast:@"授权码格式不正确"];
-            return;
-        }
-        if ([FLEXAiFlexMCPServer isEnabled]) {
-            [[FLEXAiFlexMCPServer shared] stop];
-            [[FLEXAiFlexMCPServer shared] start];
-        }
-        [weakSelf toast:@"已更新授权码"];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    AXPresentAlert(self, @"自定义授权码", @"6–64 位字母、数字、点、下划线或短横线。", AXAlertMessageStyleText,
+        ^(UITextField *field) {
+            field.placeholder = @"输入授权码";
+            field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            field.autocorrectionType = UITextAutocorrectionTypeNo;
+        }, @[
+        [AXAlertButton buttonWithTitle:@"保存" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            if (![FLEXAiFlexMCPServer setToken:alert.text]) {
+                [weakSelf toast:@"授权码格式不正确"];
+                return;
+            }
+            if ([FLEXAiFlexMCPServer isEnabled]) {
+                [[FLEXAiFlexMCPServer shared] stop];
+                [[FLEXAiFlexMCPServer shared] start];
+            }
+            [weakSelf toast:@"已更新授权码"];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)rotateToken {
@@ -357,20 +364,19 @@
         [self toast:@"当前已关闭授权保护"];
         return;
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重新生成令牌"
-                                                                   message:@"旧令牌立即失效，需要同步修改电脑端 MCP 配置。"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"重新生成" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [FLEXAiFlexMCPServer rotateToken];
-        if ([FLEXAiFlexMCPServer isEnabled]) {
-            [[FLEXAiFlexMCPServer shared] stop];
-            [[FLEXAiFlexMCPServer shared] start];
-        }
-        [weakSelf toast:@"已生成新令牌"];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    AXPresentAlert(self, @"重新生成令牌", @"旧令牌立即失效，需要同步修改电脑端 MCP 配置。", AXAlertMessageStyleText,
+        nil, @[
+        [AXAlertButton buttonWithTitle:@"重新生成" style:AXAlertButtonStyleDestructive handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer rotateToken];
+            if ([FLEXAiFlexMCPServer isEnabled]) {
+                [[FLEXAiFlexMCPServer shared] stop];
+                [[FLEXAiFlexMCPServer shared] start];
+            }
+            [weakSelf toast:@"已生成新令牌"];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)copyClientConfiguration {

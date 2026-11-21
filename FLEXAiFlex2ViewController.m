@@ -33,6 +33,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 @property (nonatomic, copy) NSArray<UISwitch *> *permissionSwitches;
 @property (nonatomic, copy) NSArray<AXRowView *> *toolRowViews;
 @property (nonatomic, strong) UILabel *permissionFootnote;
+- (void)applyGlassNavigationBar;
 - (void)showBuildFailure:(NSString *)reason;
 @end
 
@@ -71,15 +72,15 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     self.scrollView.alwaysBounceVertical = YES;
     self.scrollView.showsVerticalScrollIndicator = YES;
     self.scrollView.backgroundColor = UIColor.clearColor;
-    // 关掉自动 inset 调整，直接把滚动视图钉在安全区里：内容起点由约束决定，
-    // 不会再受导航栏/外层容器时序影响。
+    // 滚动视图铺到整页（含导航栏区域），由安全区 inset 让内容避开导航栏。
+    // 这样内容滚动时会从导航栏底下透出来，导航栏的玻璃模糊才有内容可折射。
     self.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self.view addSubview:self.scrollView];
     [NSLayoutConstraint activateConstraints:@[
-        [self.scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor]
+        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
 
     self.axRefreshControl = [UIRefreshControl new];
@@ -115,12 +116,29 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self applyGlassNavigationBar];
     [self refresh];
 }
 
-// 不覆盖导航栏 appearance：交给系统默认样式，iOS 26 下自动是液态玻璃导航栏。
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // 滚动视图铺满全屏后，用安全区补内边距：内容从导航栏下方开始，
+    // 但滚动时能滑到导航栏底下，形成液态玻璃的透过模糊。
+    UIEdgeInsets insets = UIEdgeInsetsMake(self.view.safeAreaInsets.top, 0,
+                                           self.view.safeAreaInsets.bottom, 0);
+    if (UIEdgeInsetsEqualToEdgeInsets(self.scrollView.contentInset, insets)) return;
+    self.scrollView.contentInset = insets;
+    self.scrollView.verticalScrollIndicatorInsets = insets;
+}
+
+- (void)applyGlassNavigationBar {
+    UINavigationBar *bar = self.navigationController.navigationBar;
+    if (bar) AXApplyGlassNavigationBar(bar);
+}
+
+// 顶端不再画默认的 hairline 分割线，标题与按钮随玻璃栏一起浮动。
 - (UIStatusBarStyle)preferredStatusBarStyle {
-    return UIStatusBarStyleDarkContent;
+    return UIStatusBarStyleDefault;
 }
 
 #pragma mark - Layout
@@ -649,17 +667,17 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
         [self toast:@"常用工具组已开启"];
         return;
     }
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"一键开启常用工具组？"
-        message:@"将同时开启「敏感读取」与「界面控制」两组工具，让连接上的 AI 能读取现场并操作界面。\n\n「脚本执行」与「方法追踪」风险较高，保持关闭，仍需在下方授权区单独开启。开启后请重新发现工具。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"开启" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [FLEXAiFlexMCPServer setSensitiveEnabled:YES];
-        [FLEXAiFlexMCPServer setControlEnabled:YES];
-        [self refresh];
-        [self toast:@"已开启敏感读取与界面控制，请在 AI 端重新发现工具"];
-    }]];
-    [self presentViewController:sheet animated:YES completion:nil];
+    AXPresentAlert(self, @"一键开启常用工具组？",
+        @"将同时开启「敏感读取」与「界面控制」两组工具，让连接上的 AI 能读取现场并操作界面。\n\n「脚本执行」与「方法追踪」风险较高，保持关闭，仍需在下方授权区单独开启。开启后请重新发现工具。",
+        AXAlertMessageStyleText, nil, @[
+        [AXAlertButton buttonWithTitle:@"开启" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer setSensitiveEnabled:YES];
+            [FLEXAiFlexMCPServer setControlEnabled:YES];
+            [self refresh];
+            [self toast:@"已开启敏感读取与界面控制，请在 AI 端重新发现工具"];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)copyClientConfiguration {
@@ -675,34 +693,32 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 }
 
 - (void)editEndpoint {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义访问地址"
-        message:@"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用设置页配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+    AXPresentAlert(self, @"自定义访问地址",
+        @"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用设置页配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。",
+        AXAlertMessageStyleText, ^(UITextField *field) {
         field.text = [FLEXAiFlexMCPServer endpointHost];
         field.placeholder = @"IP 或域名，如 127.0.0.1";
         field.keyboardType = UIKeyboardTypeURL;
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
         field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"使用本地地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        [FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];
-        [self refresh];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"使用局域网地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        [FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];
-        [self refresh];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        NSString *value = alert.textFields.firstObject.text;
-        if (![FLEXAiFlexMCPServer setEndpointHost:value]) {
-            [self toast:@"地址格式不正确"];
-            return;
-        }
-        [self refresh];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    }, @[
+        [AXAlertButton buttonWithTitle:@"保存" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            if (![FLEXAiFlexMCPServer setEndpointHost:alert.text]) {
+                [self toast:@"地址格式不正确"];
+                return;
+            }
+            [self refresh];
+        }],
+        [AXAlertButton buttonWithTitle:@"本地地址" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];
+            [self refresh];
+        }],
+        [AXAlertButton buttonWithTitle:@"局域网地址" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];
+            [self refresh];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
 }
 
 - (void)copyToken {
@@ -843,7 +859,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     }
 
     UIViewController *visible = [FLEXUtility topViewControllerInWindow:FLEXManager.sharedManager.explorerWindow];
-    if ([visible isKindOfClass:UIAlertController.class]) {
+    if ([visible isKindOfClass:UIAlertController.class] || AXGlassAlertVisible()) {
         self.uiTransitioning = NO;
         completion(nil, @"请先人工处理当前弹窗");
         return;
