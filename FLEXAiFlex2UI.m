@@ -250,7 +250,7 @@ AXGradientView *AXInstallBackdrop(UIView *host) {
     bloom.colors = @[
         (__bridge id)[[UIColor systemBlueColor] colorWithAlphaComponent:0.20].CGColor,
         (__bridge id)[[UIColor systemIndigoColor] colorWithAlphaComponent:0.11].CGColor,
-        (__bridge id)[UIColor.clearColor].CGColor
+        (__bridge id)([UIColor clearColor].CGColor)
     ];
     bloom.gradientStart = CGPointMake(0.1, 0);
     bloom.gradientEnd = CGPointMake(0.9, 0.92);
