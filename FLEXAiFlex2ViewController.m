@@ -101,7 +101,6 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
         appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
         UIBarButtonItemAppearance *button = [[UIBarButtonItemAppearance alloc] init];
-        [button configureWithDefaultBackground];
         appearance.buttonAppearance = button;
         appearance.doneButtonAppearance = button;
         nav.navigationBar.standardAppearance = appearance;

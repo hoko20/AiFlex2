@@ -593,7 +593,6 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
         // Explicit button appearance restores the rounded background that a host
         // app's proxy can strip from a bare UINavigationController on first present.
         UIBarButtonItemAppearance *button = [[UIBarButtonItemAppearance alloc] init];
-        [button configureWithDefaultBackground];
         bar.buttonAppearance = button;
         bar.doneButtonAppearance = button;
         nav.navigationBar.standardAppearance = bar;
