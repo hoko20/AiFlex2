@@ -43,9 +43,9 @@ FOUNDATION_EXPORT UIStackView * _Nullable AXSectionView(NSString * _Nullable tit
 FOUNDATION_EXPORT AXGlassCard *AXCardWithRows(NSArray<UIView *> *rows, CGFloat radius);
 FOUNDATION_EXPORT UIBarButtonItem *AXCheckmarkItem(id target, SEL action);
 
-// 导航栏统一成液态玻璃：去掉 hairline 分割线，改成半透明 + 模糊，
-// 滚动内容从栏下透上来，与页面玻璃卡片同一观感。
-FOUNDATION_EXPORT void AXApplyGlassNavigationBar(UINavigationBar * _Nullable bar);
+// 顶部栏：实底系统背景，不叠模糊也不再画 hairline。
+// 之前那版半透明玻璃会让滚动内容一直在栏下晃动，长时间看着容易疲劳。
+FOUNDATION_EXPORT void AXApplyOpaqueNavigationBar(UINavigationBar * _Nullable bar);
 
 #pragma mark - 玻璃弹窗
 

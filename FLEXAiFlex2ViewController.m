@@ -33,7 +33,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 @property (nonatomic, copy) NSArray<UISwitch *> *permissionSwitches;
 @property (nonatomic, copy) NSArray<AXRowView *> *toolRowViews;
 @property (nonatomic, strong) UILabel *permissionFootnote;
-- (void)applyGlassNavigationBar;
+- (void)applyOpaqueNavigationBar;
 - (void)showBuildFailure:(NSString *)reason;
 @end
 
@@ -116,14 +116,14 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self applyGlassNavigationBar];
+    [self applyOpaqueNavigationBar];
     [self refresh];
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    // 滚动视图铺满全屏后，用安全区补内边距：内容从导航栏下方开始，
-    // 但滚动时能滑到导航栏底下，形成液态玻璃的透过模糊。
+    // 滚动视图铺满全屏、用安全区补内边距：内容首行落在顶部栏下方，
+    // 滚动时从实底栏底下穿过，被栏挡住而不是透出来。
     UIEdgeInsets insets = UIEdgeInsetsMake(self.view.safeAreaInsets.top, 0,
                                            self.view.safeAreaInsets.bottom, 0);
     if (UIEdgeInsetsEqualToEdgeInsets(self.scrollView.contentInset, insets)) return;
@@ -131,12 +131,12 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     self.scrollView.verticalScrollIndicatorInsets = insets;
 }
 
-- (void)applyGlassNavigationBar {
+- (void)applyOpaqueNavigationBar {
     UINavigationBar *bar = self.navigationController.navigationBar;
-    if (bar) AXApplyGlassNavigationBar(bar);
+    if (bar) AXApplyOpaqueNavigationBar(bar);
 }
 
-// 顶端不再画默认的 hairline 分割线，标题与按钮随玻璃栏一起浮动。
+// 顶部只有实底背景，不画默认的 hairline 分割线。
 - (UIStatusBarStyle)preferredStatusBarStyle {
     return UIStatusBarStyleDefault;
 }

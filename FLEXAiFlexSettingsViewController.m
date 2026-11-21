@@ -34,7 +34,7 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    AXApplyGlassNavigationBar(self.navigationController.navigationBar);
+    AXApplyOpaqueNavigationBar(self.navigationController.navigationBar);
     [self refresh];
 }
 

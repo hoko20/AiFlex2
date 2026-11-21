@@ -346,19 +346,17 @@ UIBarButtonItem *AXCheckmarkItem(id target, SEL action) {
     return item;
 }
 
-#pragma mark - 玻璃导航栏
+#pragma mark - 顶部栏
 
-// 系统默认导航栏带一条 hairline 分割线与不透明底色，和玻璃卡片拼在一起很割裂。
-// 这里统一成：无分割线 + 半透明底色 + 液态玻璃/毛玻璃模糊，滚动内容从底下透上来。
-void AXApplyGlassNavigationBar(UINavigationBar *bar) {
+// 实底系统背景：不做模糊、不画 hairline。
+// 半透明玻璃在滚动时内容持续从栏下穿过，视觉噪音大，长时间看容易疲劳。
+void AXApplyOpaqueNavigationBar(UINavigationBar *bar) {
     if (!bar) return;
     UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-    [appearance configureWithTransparentBackground];
+    [appearance configureWithOpaqueBackground];
+    appearance.backgroundColor = UIColor.systemBackgroundColor;
     appearance.shadowColor = UIColor.clearColor;
-    appearance.backgroundColor = [UIColor.systemBackgroundColor colorWithAlphaComponent:0.28];
-    UIVisualEffect *effect = AXGlassEffect();
-    if (!effect) effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
-    appearance.backgroundEffect = effect;
+    appearance.backgroundEffect = nil;
     appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
     appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
 
@@ -366,7 +364,7 @@ void AXApplyGlassNavigationBar(UINavigationBar *bar) {
     bar.compactAppearance = appearance;
     bar.scrollEdgeAppearance = appearance;
     if (@available(iOS 15.0, *)) bar.compactScrollEdgeAppearance = appearance;
-    bar.translucent = YES;
+    bar.translucent = NO;
     bar.shadowImage = [UIImage new];
 }
 
