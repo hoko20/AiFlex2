@@ -581,38 +581,14 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
     [self showAiFlex2PanelForObject:object report:report className:name];
 }
 
-- (void)configureAiFlexNavigationAppearance:(UINavigationController *)nav {
-    if (!nav) return;
-    nav.navigationBar.tintColor = UIColor.systemBlueColor;
-    nav.modalPresentationCapturesStatusBarAppearance = YES;
-    if (@available(iOS 15.0, *)) {
-        UINavigationBarAppearance *bar = [[UINavigationBarAppearance alloc] init];
-        [bar configureWithOpaqueBackground];
-        bar.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
-        bar.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
-        // Explicit button appearance restores the rounded background that a host
-        // app's proxy can strip from a bare UINavigationController on first present.
-        UIBarButtonItemAppearance *button = [[UIBarButtonItemAppearance alloc] init];
-        bar.buttonAppearance = button;
-        bar.doneButtonAppearance = button;
-        nav.navigationBar.standardAppearance = bar;
-        nav.navigationBar.scrollEdgeAppearance = bar;
-        nav.navigationBar.compactAppearance = bar;
-        nav.navigationBar.compactScrollEdgeAppearance = bar;
-    }
-}
-
 - (void)showAiFlex2PanelForObject:(id)object report:(NSString *)report className:(NSString *)name {
     if (!self.aiFlexNavigation) {
         FLEXAiFlex2ViewController *panel = [[FLEXAiFlex2ViewController alloc] initWithReport:report className:name];
         panel.selectedObject = object;
         self.aiFlexNavigation = [[UINavigationController alloc] initWithRootViewController:panel];
         self.aiFlexNavigation.modalPresentationStyle = UIModalPresentationFullScreen;
-        // Configure the presented navigation bar up front, before present animations begin.
-        // On first open FLEXWindow is not key yet, so relying on the panel's lifecycle lets
-        // the host app's global appearance proxy leak in (plain-text buttons, transparent bar,
-        // white status bar). Setting opaque bar + explicit button appearance here is deterministic.
-        [self configureAiFlexNavigationAppearance:self.aiFlexNavigation];
+        // 只声明状态栏由本面板决定；导航栏/按钮外观保持系统默认，iOS 26 下即为液态玻璃。
+        self.aiFlexNavigation.modalPresentationCapturesStatusBarAppearance = YES;
     } else {
         FLEXAiFlex2ViewController *panel = (FLEXAiFlex2ViewController *)self.aiFlexNavigation.viewControllers.firstObject;
         [panel updateReport:report className:name selectedObject:object];

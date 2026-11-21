@@ -70,48 +70,18 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     [self.refreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
 
     [self syncRuntimeContext];
-    [self configureStableNavigationAppearance];
     [self refresh];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self configureStableNavigationAppearance];
     [self refresh];
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    // Re-apply after the present animation completes and FLEXWindow has become key;
-    // UIKit may restyle bar/buttons from the global proxy during the transition.
-    [self configureStableNavigationAppearance];
-}
-
-// 首次 present 面板时 FLEX 的 explorerWindow 可能尚未成为 keyWindow，宿主 App 的
-// 全局 UIBarButtonItem/UINavigationBar appearance 会泄漏进这个裸 UINavigationController，
-// 造成按钮退化成纯文字、透明导航栏压住标题、状态栏变白字；第二次打开因复用了已稳定的
-// nav 与 window 才正常。这里显式固定本页外观，不依赖 present 时序，保证每次一致。
-- (void)configureStableNavigationAppearance {
-    UINavigationController *nav = self.navigationController;
-    if (!nav) return;
-    nav.navigationBar.tintColor = UIColor.systemBlueColor;
-    if (@available(iOS 15.0, *)) {
-        UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-        [appearance configureWithOpaqueBackground];
-        appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
-        appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
-        UIBarButtonItemAppearance *button = [[UIBarButtonItemAppearance alloc] init];
-        appearance.buttonAppearance = button;
-        appearance.doneButtonAppearance = button;
-        nav.navigationBar.standardAppearance = appearance;
-        nav.navigationBar.scrollEdgeAppearance = appearance;
-        nav.navigationBar.compactAppearance = appearance;
-        nav.navigationBar.compactScrollEdgeAppearance = appearance;
-    }
-    // 让状态栏由本页决定（黑字），而不是未成为 key 的 FLEX window / 宿主 App。
-    nav.modalPresentationCapturesStatusBarAppearance = YES;
-}
-
+// 不再覆盖导航栏 appearance。宿主 App 的全局 appearance proxy 只会影响它自己的窗口；
+// 这里是 FLEX window 里独立的 UINavigationController，交给系统默认样式即可获得
+// iOS 26 的液态玻璃导航栏与圆形按钮。之前显式设置 opaque 背景 + 空白按钮 appearance
+// 反而把系统默认材质和按钮底色抹掉，导致首次打开时看到纯文字按钮和灰色导航条。
 - (UIStatusBarStyle)preferredStatusBarStyle {
     return UIStatusBarStyleDarkContent;
 }
@@ -130,8 +100,51 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     UIView *card = [UIView new];
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
-    card.layer.cornerRadius = 16;
+    card.layer.cornerRadius = 20;
+    card.layer.masksToBounds = YES;
     [hero addSubview:card];
+
+    // iOS 26+ 使用运行时发现的方式挂载液态玻璃材质；低版本或与新 SDK 编译的
+    // 宿主环境不一致时安全降级为系统 grouped 背景，不依赖编译期符号。
+    BOOL glassApplied = NO;
+    Class glassClass = NSClassFromString(@"UIGlassEffect");
+    if (glassClass) {
+        @try {
+            id effect = [[glassClass alloc] init];
+            if ([effect isKindOfClass:[UIVisualEffect class]]) {
+                UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
+                glass.translatesAutoresizingMaskIntoConstraints = NO;
+                glass.layer.cornerRadius = 20;
+                glass.layer.masksToBounds = YES;
+                [card insertSubview:glass atIndex:0];
+                [NSLayoutConstraint activateConstraints:@[
+                    [glass.topAnchor constraintEqualToAnchor:card.topAnchor],
+                    [glass.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+                    [glass.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+                    [glass.bottomAnchor constraintEqualToAnchor:card.bottomAnchor]
+                ]];
+                card.backgroundColor = UIColor.clearColor;
+                glassApplied = YES;
+            }
+        } @catch (__unused NSException *exception) {
+            glassApplied = NO;
+        }
+    }
+    if (!glassApplied && @available(iOS 13.0, *)) {
+        UIVisualEffectView *material = [[UIVisualEffectView alloc]
+            initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+        material.translatesAutoresizingMaskIntoConstraints = NO;
+        material.layer.cornerRadius = 20;
+        material.layer.masksToBounds = YES;
+        [card insertSubview:material atIndex:0];
+        [NSLayoutConstraint activateConstraints:@[
+            [material.topAnchor constraintEqualToAnchor:card.topAnchor],
+            [material.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+            [material.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+            [material.bottomAnchor constraintEqualToAnchor:card.bottomAnchor]
+        ]];
+        card.backgroundColor = [[UIColor secondarySystemGroupedBackgroundColor] colorWithAlphaComponent:0.65];
+    }
 
     UIView *badge = [UIView new];
     badge.translatesAutoresizingMaskIntoConstraints = NO;
