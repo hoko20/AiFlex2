@@ -396,7 +396,7 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
 @interface AXGlassAlert () <UITextFieldDelegate>
 @property (nonatomic, strong) UIView *overlay;
 @property (nonatomic, strong) AXGlassCard *card;
-@property (nonatomic, strong) UITextField *textField;
+@property (nonatomic, strong, nullable) UITextField *textField;
 @property (nonatomic, strong) NSLayoutConstraint *centerConstraint;
 @property (nonatomic, copy) NSArray<AXAlertButton *> *buttons;
 @property (nonatomic, assign) BOOL dismissing;
@@ -560,22 +560,22 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
 
 - (UIStackView *)columnForButtons:(NSArray<AXAlertButton *> *)buttons {
     NSMutableArray<UIView *> *rows = [NSMutableArray new];
-    NSMutableArray<AXAlertButton *> *inline = [NSMutableArray new];
+    NSMutableArray<AXAlertButton *> *inlineActions = [NSMutableArray new];
     for (AXAlertButton *action in buttons) {
         if (action.style == AXAlertButtonStyleInline) {
-            [inline addObject:action];
+            [inlineActions addObject:action];
             continue;
         }
-        if (inline.count) {
-            [rows addObject:[self buttonRow:inline]];
-            [inline removeAllObjects];
+        if (inlineActions.count) {
+            [rows addObject:[self buttonRow:inlineActions]];
+            [inlineActions removeAllObjects];
         }
         UIButton *button = [self buttonForAction:action];
         if (!button) continue;
         [button.heightAnchor constraintEqualToConstant:48].active = YES;
         [rows addObject:button];
     }
-    if (inline.count) [rows addObject:[self buttonRow:inline]];
+    if (inlineActions.count) [rows addObject:[self buttonRow:inlineActions]];
 
     UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:rows];
     column.axis = UILayoutConstraintAxisVertical;
