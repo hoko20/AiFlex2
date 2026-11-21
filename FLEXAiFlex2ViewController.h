@@ -3,7 +3,7 @@
 // AiFlex2 control surface. Runs entirely inside the injected app: it shows the
 // in-process MCP service state, the current FLEX selection and the grants that
 // gate each tool group. It also hosts the window operations exposed to MCP.
-@interface FLEXAiFlex2ViewController : UITableViewController
+@interface FLEXAiFlex2ViewController : UIViewController
 
 @property (nonatomic, copy) NSString *(^reportProvider)(void);
 @property (nonatomic, weak) id selectedObject;

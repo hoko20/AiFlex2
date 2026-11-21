@@ -108,7 +108,8 @@ static UIVisualEffect *AXGlassEffect(void) {
     UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
     glass.translatesAutoresizingMaskIntoConstraints = NO;
     glass.userInteractionEnabled = NO;
-    [self addSubview:glass];
+    // 玻璃只做背景：始终压在最底层，后续添加的内容自然在它上面。
+    [self insertSubview:glass atIndex:0];
     [NSLayoutConstraint activateConstraints:@[
         [glass.topAnchor constraintEqualToAnchor:self.topAnchor],
         [glass.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
@@ -305,6 +306,7 @@ static UIVisualEffect *AXGlassEffect(void) {
 @property (nonatomic, copy) NSArray<UISwitch *> *permissionSwitches;
 @property (nonatomic, copy) NSArray<AXRowView *> *toolRowViews;
 @property (nonatomic, strong) UILabel *permissionFootnote;
+- (void)showBuildFailure:(NSString *)reason;
 @end
 
 @implementation FLEXAiFlex2ViewController
@@ -346,7 +348,7 @@ static UIVisualEffect *AXGlassEffect(void) {
     ];
     bloom.gradientStart = CGPointMake(0.15, 0);
     bloom.gradientEnd = CGPointMake(0.85, 0.55);
-    [self.view addSubview:bloom];
+    [self.view insertSubview:bloom atIndex:0];
     [NSLayoutConstraint activateConstraints:@[
         [bloom.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [bloom.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -358,20 +360,47 @@ static UIVisualEffect *AXGlassEffect(void) {
     self.scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     self.scrollView.alwaysBounceVertical = YES;
     self.scrollView.showsVerticalScrollIndicator = YES;
+    self.scrollView.backgroundColor = UIColor.clearColor;
+    // 关掉自动 inset 调整，直接把滚动视图钉在安全区里：内容起点由约束决定，
+    // 不会再受导航栏/外层容器时序影响。
+    self.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self.view addSubview:self.scrollView];
     [NSLayoutConstraint activateConstraints:@[
-        [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor]
     ]];
 
     self.axRefreshControl = [UIRefreshControl new];
     [self.axRefreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
     [self.scrollView addSubview:self.axRefreshControl];
 
-    [self buildContent];
+    // 建页失败时给出可见提示，而不是留下一片空白让人猜。
+    @try {
+        [self buildContent];
+    } @catch (NSException *exception) {
+        [self showBuildFailure:exception.reason ?: exception.name];
+        return;
+    }
     [self refresh];
+}
+
+- (void)showBuildFailure:(NSString *)reason {
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.numberOfLines = 0;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont systemFontOfSize:13];
+    label.textColor = UIColor.secondaryLabelColor;
+    label.text = [NSString stringWithFormat:@"面板渲染失败\n%@", reason ?: @"未知原因"];
+    [self.view addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:24],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-24]
+    ]];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -400,14 +429,24 @@ static UIVisualEffect *AXGlassEffect(void) {
     content.spacing = 24;
     content.alignment = UIStackViewAlignmentFill;
     content.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.scrollView addSubview:content];
+
+    // 用一层朴素容器托住栈：滚动视图只负责尺寸，内容高度完全由容器与栈决定，
+    // 避免栈直接挂在 contentLayoutGuide 上时被外层滚动容器压缩成零高。
+    UIView *container = [UIView new];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:content];
+    [self.scrollView addSubview:container];
 
     [NSLayoutConstraint activateConstraints:@[
-        [content.topAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.topAnchor constant:10],
-        [content.leadingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.leadingAnchor constant:16],
-        [content.trailingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.trailingAnchor constant:-16],
-        [content.bottomAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.bottomAnchor constant:-32],
-        [content.widthAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.widthAnchor constant:-32]
+        [container.topAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.topAnchor],
+        [container.leadingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.trailingAnchor],
+        [container.bottomAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.bottomAnchor],
+        [container.widthAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.widthAnchor],
+        [content.topAnchor constraintEqualToAnchor:container.topAnchor constant:12],
+        [content.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [content.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [content.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-36]
     ]];
 }
 
@@ -468,6 +507,7 @@ static UIVisualEffect *AXGlassEffect(void) {
     stack.spacing = 0;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:stack];
+    [card bringSubviewToFront:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:4],
         [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
@@ -532,6 +572,7 @@ static UIVisualEffect *AXGlassEffect(void) {
     stack.alignment = UIStackViewAlignmentFill;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:stack];
+    [card bringSubviewToFront:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
         [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
