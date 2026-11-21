@@ -12,6 +12,7 @@
 
 static NSString *const DXMCPServiceKey=@"FLEXAiFlexMCP.enabled";
 static NSString *const DXMCPPortKey=@"FLEXAiFlexMCP.port";
+static NSString *const DXMCPHostKey=@"FLEXAiFlexMCP.host";
 static NSString *const DXMCPTokenKey=@"FLEXAiFlexMCP.token";
 static NSString *const DXMCPAuthKey=@"FLEXAiFlexMCP.requireToken";
 static NSString *const DXMCPGroupPrefix=@"FLEXAiFlexMCP.group.";
@@ -167,7 +168,25 @@ static NSString *LocalIPv4(void){
  NSUInteger port=[NSUserDefaults.standardUserDefaults integerForKey:DXMCPPortKey];
  return port>=1024&&port<=65535?port:8790;
 }
-+ (void)setPort:(NSUInteger)port{if(port<1024||port>65535)return;[NSUserDefaults.standardUserDefaults setInteger:port forKey:DXMCPPortKey];}
++ (void)setPort:(NSUInteger)port{if(port<1024||port>65535)return;[NSUserDefaults.standardUserDefaults setInteger:port forKey:DXMCPPortKey];Sync();}
++ (NSString *)endpointHost{
+ NSString *host=[NSUserDefaults.standardUserDefaults stringForKey:DXMCPHostKey];
+ host=[host stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+ return host.length?host:@"127.0.0.1";
+}
++ (BOOL)setEndpointHost:(NSString *)host{
+ NSString *value=[host stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+ // Accept a full URL pasted by the user and keep only the host component.
+ if([value containsString:@"://"]){NSURL *url=[NSURL URLWithString:value];value=url.host?:value;}
+ // Strip an optional port or path suffix so endpoint can re-append the configured port.
+ NSURLComponents *parts=[NSURLComponents componentsWithString:[@"http://" stringByAppendingString:value]];
+ if(parts.host.length)value=parts.host;
+ if(!value.length||value.length>253)return NO;
+ NSCharacterSet *allowed=[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.:[]-"];
+ if([value rangeOfCharacterFromSet:allowed.invertedSet].location!=NSNotFound)return NO;
+ [NSUserDefaults.standardUserDefaults setObject:value forKey:DXMCPHostKey];Sync();
+ return YES;
+}
 + (BOOL)authRequired{
  id stored=[NSUserDefaults.standardUserDefaults objectForKey:DXMCPAuthKey];
  return stored?[stored boolValue]:YES;
@@ -180,7 +199,7 @@ static NSString *LocalIPv4(void){
 }
 + (BOOL)setToken:(NSString *)token{
  NSString *value=[token stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
- if(value.length<8||value.length>64)return NO;
+ if(value.length<6||value.length>64)return NO;
  NSCharacterSet *allowed=[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"];
  if([value rangeOfCharacterFromSet:allowed.invertedSet].location!=NSNotFound)return NO;
  [NSUserDefaults.standardUserDefaults setObject:value forKey:DXMCPTokenKey];
@@ -209,7 +228,8 @@ static NSString *LocalIPv4(void){
  return stored?[stored boolValue]:NO;
 }
 + (void)setTracingEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:[DXMCPGroupPrefix stringByAppendingString:@"tracing"]];Sync();}
-+ (NSString *)endpoint{return [NSString stringWithFormat:@"http://%@:%lu/mcp",LocalIPv4(),(unsigned long)[self port]];}
++ (NSString *)localAddress{return LocalIPv4();}
++ (NSString *)endpoint{return [NSString stringWithFormat:@"http://%@:%lu/mcp",[self endpointHost],(unsigned long)[self port]];}
 + (NSString *)status{
  FLEXAiFlexMCPServer *server=[self shared];
  if(![self isEnabled])return @"未开启";

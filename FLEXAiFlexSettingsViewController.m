@@ -115,8 +115,19 @@
   [self presentViewController:alert animated:YES completion:nil];return;
  }
  if(indexPath.section==0&&indexPath.row==2){
-  UIPasteboard.generalPasteboard.string=[FLEXAiFlexMCPServer endpoint];
-  [self toast:@"已复制访问地址"];return;
+  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"自定义访问地址" message:@"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用下方配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。" preferredStyle:UIAlertControllerStyleAlert];
+  [alert addTextFieldWithConfigurationHandler:^(UITextField *field){
+   field.text=[FLEXAiFlexMCPServer endpointHost];field.placeholder=@"IP 或域名，如 127.0.0.1";
+   field.keyboardType=UIKeyboardTypeURL;field.autocapitalizationType=UITextAutocapitalizationTypeNone;field.autocorrectionType=UITextAutocorrectionTypeNo;
+  }];
+  [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"本地地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];[self reloadSoon];}]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"局域网地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];[self reloadSoon];}]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+   if(![FLEXAiFlexMCPServer setEndpointHost:alert.textFields.firstObject.text]){[self toast:@"地址格式不正确"];return;}
+   [self reloadSoon];
+  }]];
+  [self presentViewController:alert animated:YES completion:nil];return;
  }
  if(indexPath.section==2&&indexPath.row==0){
   NSString *url=[FLEXAiFlexMCPServer endpoint],*json;
@@ -133,7 +144,7 @@
   [self presentViewController:alert animated:YES completion:nil];return;
  }
  if(indexPath.section==1&&indexPath.row==2){
-  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"自定义授权码" message:@"8–64 位字母、数字、点、下划线或短横线。" preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"自定义授权码" message:@"6–64 位字母、数字、点、下划线或短横线。" preferredStyle:UIAlertControllerStyleAlert];
   [alert addTextFieldWithConfigurationHandler:^(UITextField *field){
    field.placeholder=@"输入授权码";
    field.autocapitalizationType=UITextAutocapitalizationTypeNone;

@@ -140,7 +140,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     addressValue.textColor = UIColor.secondaryLabelColor;
     addressValue.lineBreakMode = NSLineBreakByTruncatingMiddle;
     addressValue.userInteractionEnabled = YES;
-    [addressValue addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyEndpoint)]];
+    [addressValue addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(editEndpoint)]];
     self.endpointLabel = addressValue;
 
     UILabel *tokenCaption = [self captionLabel:@"访问令牌"];
@@ -153,7 +153,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     self.tokenLabel = tokenValue;
 
     UILabel *hint = [UILabel new];
-    hint.text = @"轻点地址或令牌可复制 · 服务随宿主 App 生命周期运行";
+    hint.text = @"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行";
     hint.font = [UIFont systemFontOfSize:11];
     hint.textColor = UIColor.tertiaryLabelColor;
     hint.numberOfLines = 0;
@@ -514,8 +514,35 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     [self copyText:json message:@"已复制 MCP 客户端配置"];
 }
 
-- (void)copyEndpoint {
-    [self copyText:[FLEXAiFlexMCPServer endpoint] message:@"已复制访问地址"];
+- (void)editEndpoint {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义访问地址"
+        message:@"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用设置页配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = [FLEXAiFlexMCPServer endpointHost];
+        field.placeholder = @"IP 或域名，如 127.0.0.1";
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"使用本地地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        [FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];
+        [self refresh];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"使用局域网地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        [FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];
+        [self refresh];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        NSString *value = alert.textFields.firstObject.text;
+        if (![FLEXAiFlexMCPServer setEndpointHost:value]) {
+            [self toast:@"地址格式不正确"];
+            return;
+        }
+        [self refresh];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)copyToken {
@@ -555,26 +582,31 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 }
 
 - (void)toast:(NSString *)text {
+    // 挂到 FLEX 的 explorerWindow（或 keyWindow）并居中，避免面板非全屏时提示偏离屏幕中央。
+    UIWindow *window = FLEXManager.sharedManager.explorerWindow ?: UIApplication.sharedApplication.keyWindow ?: self.view.window;
+    UIView *host = window ?: self.view;
     UILabel *label = [UILabel new];
     label.text = text;
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     label.textColor = UIColor.whiteColor;
-    label.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.78];
+    label.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.82];
     label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
     label.layer.cornerRadius = 16;
     label.layer.masksToBounds = YES;
     label.alpha = 0;
-    [label sizeToFit];
-    CGRect frame = label.frame;
-    frame.size.width += 28;
-    frame.size.height = 32;
-    frame.origin.x = (CGRectGetWidth(self.view.bounds) - CGRectGetWidth(frame)) / 2;
-    frame.origin.y = CGRectGetHeight(self.view.bounds) - self.view.safeAreaInsets.bottom - 70;
+    CGFloat maxWidth = CGRectGetWidth(host.bounds) - 48;
+    CGRect textBox = [text boundingRectWithSize:CGSizeMake(maxWidth - 28, CGFLOAT_MAX)
+        options:NSStringDrawingUsesLineFragmentOrigin
+        attributes:@{NSFontAttributeName:label.font} context:nil];
+    CGRect frame = CGRectMake(0, 0, MIN(maxWidth, CGRectGetWidth(textBox) + 28), MAX(36, CGRectGetHeight(textBox) + 20));
     label.frame = frame;
-    label.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-    [self.view addSubview:label];
+    label.center = CGPointMake(CGRectGetMidX(host.bounds), CGRectGetMidY(host.bounds));
+    label.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin
+        | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    [host addSubview:label];
     [UIView animateWithDuration:0.18 animations:^{ label.alpha = 1; } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.3 delay:0.9 options:0 animations:^{ label.alpha = 0; } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.3 delay:1.1 options:0 animations:^{ label.alpha = 0; } completion:^(BOOL finished) {
             [label removeFromSuperview];
         }];
     }];

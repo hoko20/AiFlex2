@@ -9,6 +9,9 @@
 + (void)setEnabled:(BOOL)enabled;
 + (NSUInteger)port;
 + (void)setPort:(NSUInteger)port;
++ (NSString *)endpointHost;
++ (BOOL)setEndpointHost:(NSString *)host;
++ (NSString *)localAddress;
 + (BOOL)authRequired;
 + (void)setAuthRequired:(BOOL)required;
 + (NSString *)token;
