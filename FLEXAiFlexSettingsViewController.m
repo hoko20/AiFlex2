@@ -1,190 +1,420 @@
 #import "FLEXAiFlexSettingsViewController.h"
 #import "FLEXAiFlexMCPServer.h"
+#import "FLEXAiFlex2UI.h"
+
+@interface FLEXAiFlexSettingsViewController ()
+@property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) AXRowView *serviceRow;
+@property (nonatomic, strong) AXRowView *portRow;
+@property (nonatomic, strong) AXRowView *endpointRow;
+@property (nonatomic, strong) AXRowView *statusRow;
+@property (nonatomic, strong) AXRowView *authRow;
+@property (nonatomic, strong) AXRowView *tokenRow;
+@property (nonatomic, strong) AXRowView *customTokenRow;
+@property (nonatomic, strong) AXRowView *rotateRow;
+@property (nonatomic, copy) NSArray<AXRowView *> *groupRows;
+@end
 
 @implementation FLEXAiFlexSettingsViewController
-- (instancetype)init{
- if((self=[super initWithStyle:UITableViewStyleInsetGrouped])){
-  self.title=@"MCP 服务";
-  self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc]initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
- }
- return self;
+
+- (instancetype)init {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) self.title = @"MCP 服务";
+    return self;
 }
-- (void)viewDidLoad{
- [super viewDidLoad];
- self.tableView.rowHeight=50;
- [self reloadSoon];
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.navigationItem.rightBarButtonItem = AXCheckmarkItem(self, @selector(done));
+    AXInstallBackdrop(self.view);
+    [self buildContent];
+    [self refresh];
 }
-- (void)done{[self dismissViewControllerAnimated:YES completion:nil];}
-- (void)reloadSoon{
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.6*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[self.tableView reloadData];});
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refresh];
 }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView{return 3;}
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section{
- return section==0?@"服务":section==1?@"授权":@"使用方式";
+
+- (void)done {
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section{
- if(section==1)return @"敏感读取：头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n界面控制：点击、输入、滚动、手势、高亮与方法调用，会真实改变 App 状态。\n脚本执行：在 WKWebView 运行 JavaScript，可能改变网页状态。\n方法追踪：运行期替换方法实现并记录调用，可能崩溃或卡顿，10 分钟自动停止。\n授权保护开启时必须携带 Bearer 令牌；关闭后同一局域网内无需令牌即可连接，请仅在可信网络使用。";
- if(section==2)return @"在电脑端 MCP 客户端（Claude Desktop、Cursor、Cherry Studio 等）添加 Streamable HTTP 服务，URL 填上方访问地址；开启授权保护时请求头加 Authorization: Bearer <访问令牌>。服务只在宿主 App 进程内运行，App 被挂起或杀死时连接会中断，重新打开 App 后自动恢复。HTTP 为明文，仅用于可信局域网。";
- return nil;
+
+#pragma mark - Layout
+
+- (AXRowView *)row:(NSString *)title
+          subtitle:(NSString *)subtitle
+            symbol:(NSString *)symbol
+              tint:(UIColor *)tint {
+    AXRowView *row = [[AXRowView alloc] initWithFrame:CGRectZero];
+    row.titleLabel.text = title;
+    if (subtitle.length) {
+        row.subtitleLabel.text = subtitle;
+        row.subtitleLabel.hidden = NO;
+    }
+    [row setSymbol:symbol tint:tint];
+    return row;
 }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section{
- return section==0?4:section==1?8:2;
+
+- (void)buildContent {
+    __weak typeof(self) weakSelf = self;
+
+    self.serviceRow = [self row:@"MCP 服务" subtitle:nil symbol:@"antenna.radiowaves.left.and.right"
+                          tint:UIColor.systemGreenColor];
+    [self.serviceRow setShowsSwitch:YES];
+    self.serviceRow.onToggle = ^(BOOL on) { [weakSelf toggleService:on]; };
+
+    self.portRow = [self row:@"监听端口" subtitle:nil symbol:@"number" tint:UIColor.systemBlueColor];
+    [self.portRow setShowsChevron:YES];
+    self.portRow.valueLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightMedium];
+    self.portRow.onTap = ^{ [weakSelf editPort]; };
+
+    self.endpointRow = [self row:@"访问地址" subtitle:nil symbol:@"link" tint:UIColor.systemIndigoColor];
+    [self.endpointRow setShowsChevron:YES];
+    self.endpointRow.onTap = ^{ [weakSelf editEndpoint]; };
+
+    self.statusRow = [self row:@"运行状态" subtitle:nil symbol:@"bolt.horizontal.circle"
+                         tint:UIColor.systemGrayColor];
+    self.statusRow.userInteractionEnabled = NO;
+    self.statusRow.valueLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+
+    AXGlassCard *serviceCard = AXCardWithRows(@[self.serviceRow, self.portRow, self.endpointRow, self.statusRow], 22);
+
+    self.authRow = [self row:@"授权保护" subtitle:@"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接"
+                      symbol:@"lock.shield.fill" tint:UIColor.systemGreenColor];
+    [self.authRow setShowsSwitch:YES];
+    self.authRow.onToggle = ^(BOOL on) { [weakSelf setGroup:0 on:on]; };
+
+    self.tokenRow = [self row:@"访问令牌" subtitle:nil symbol:@"key.horizontal.fill" tint:UIColor.systemBlueColor];
+    [self.tokenRow setShowsChevron:YES];
+    self.tokenRow.valueLabel.font = [UIFont systemFontOfSize:13];
+    self.tokenRow.onTap = ^{ [weakSelf copyToken]; };
+
+    self.customTokenRow = [self row:@"自定义授权码" subtitle:@"6–64 位字母、数字、点、下划线或短横线"
+                             symbol:@"square.and.pencil" tint:UIColor.systemBlueColor];
+    [self.customTokenRow setShowsChevron:YES];
+    self.customTokenRow.onTap = ^{ [weakSelf editCustomToken]; };
+
+    self.rotateRow = [self row:@"重新生成令牌" subtitle:@"旧令牌立即失效，需同步修改电脑端配置"
+                        symbol:@"arrow.triangle.2.circlepath" tint:UIColor.systemRedColor];
+    [self.rotateRow setShowsChevron:YES];
+    self.rotateRow.titleLabel.textColor = UIColor.systemRedColor;
+    self.rotateRow.onTap = ^{ [weakSelf rotateToken]; };
+
+    AXRowView *sensitive = [self row:@"敏感读取"
+                            subtitle:@"头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据"
+                              symbol:@"eye.fill" tint:UIColor.systemBlueColor];
+    AXRowView *control = [self row:@"界面控制"
+                          subtitle:@"点击、输入、滚动、手势、高亮与方法调用，会改变 App 状态"
+                            symbol:@"hand.tap.fill" tint:UIColor.systemIndigoColor];
+    AXRowView *script = [self row:@"脚本执行"
+                         subtitle:@"在 WKWebView 执行 JavaScript，可能改变网页状态"
+                           symbol:@"curlybraces" tint:UIColor.systemOrangeColor];
+    AXRowView *tracing = [self row:@"方法追踪"
+                          subtitle:@"替换方法实现并记录调用，高风险，10 分钟自动停止"
+                            symbol:@"waveform.path.ecg" tint:UIColor.systemRedColor];
+    self.groupRows = @[sensitive, control, script, tracing];
+    NSInteger index = 1;
+    for (AXRowView *row in self.groupRows) {
+        [row setShowsSwitch:YES];
+        NSInteger group = index;
+        row.onToggle = ^(BOOL on) { [weakSelf setGroup:group on:on]; };
+        index++;
+    }
+
+    AXGlassCard *authCard = AXCardWithRows(@[self.authRow, self.tokenRow, self.customTokenRow,
+                                             self.rotateRow, sensitive, control, script, tracing], 22);
+
+    AXRowView *copyConfig = [self row:@"复制 MCP 客户端配置" subtitle:nil
+                                symbol:@"square.on.square" tint:UIColor.systemBlueColor];
+    [copyConfig setShowsChevron:YES];
+    copyConfig.onTap = ^{ [weakSelf copyClientConfiguration]; };
+
+    AXGlassCard *usageCard = AXCardWithRows(@[copyConfig], 22);
+
+    NSString *authNote = @"敏感读取：头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n"
+        "界面控制：点击、输入、滚动、手势、高亮与方法调用，会真实改变 App 状态。\n"
+        "脚本执行：在 WKWebView 运行 JavaScript，可能改变网页状态。\n"
+        "方法追踪：运行期替换方法实现并记录调用，可能崩溃或卡顿，10 分钟自动停止。\n"
+        "授权保护开启时必须携带 Bearer 令牌；关闭后同一局域网内无需令牌即可连接，请仅在可信网络使用。";
+    NSString *usageNote = @"在电脑端 MCP 客户端（Claude Desktop、Cursor、Cherry Studio 等）添加 Streamable HTTP 服务，"
+        "URL 填上方访问地址；开启授权保护时请求头加 Authorization: Bearer <访问令牌>。\n"
+        "服务只在宿主 App 进程内运行，App 被挂起或杀死时连接会中断，重新打开 App 后自动恢复。"
+        "HTTP 为明文，仅用于可信局域网。\n"
+        "工具：status / read / sensitive / control / script / trace";
+
+    UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[
+        AXSectionView(@"服务", serviceCard, nil),
+        AXSectionView(@"授权", authCard, authNote),
+        AXSectionView(@"使用方式", usageCard, usageNote)
+    ]];
+    content.axis = UILayoutConstraintAxisVertical;
+    content.spacing = 24;
+    content.alignment = UIStackViewAlignmentFill;
+    content.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView *container = [UIView new];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:content];
+    [self.scrollView addSubview:container];
+    [NSLayoutConstraint activateConstraints:@[
+        [container.topAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.topAnchor],
+        [container.leadingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.trailingAnchor],
+        [container.bottomAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.bottomAnchor],
+        [container.widthAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.widthAnchor],
+        [content.topAnchor constraintEqualToAnchor:container.topAnchor constant:12],
+        [content.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [content.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [content.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-36]
+    ]];
 }
-- (UITableViewCell *)cell:(UITableView *)tableView{
- UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"cell"];
- if(!cell)cell=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"cell"];
- return cell;
+
+- (UIScrollView *)scrollView {
+    if (!_scrollView) {
+        _scrollView = [UIScrollView new];
+        _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+        _scrollView.alwaysBounceVertical = YES;
+        _scrollView.showsVerticalScrollIndicator = YES;
+        _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        [self.view addSubview:_scrollView];
+        [NSLayoutConstraint activateConstraints:@[
+            [_scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+            [_scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+            [_scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+            [_scrollView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor]
+        ]];
+    }
+    return _scrollView;
 }
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath{
- if(indexPath.section==1&&(indexPath.row==0||indexPath.row>=4))return 68;
- return 50;
+
+#pragma mark - Refresh
+
+- (void)refresh {
+    BOOL enabled = [FLEXAiFlexMCPServer isEnabled];
+    self.serviceRow.toggle.on = enabled;
+
+    [self.portRow setValueText:[NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]]];
+    [self.endpointRow setValueText:[FLEXAiFlexMCPServer endpoint]];
+
+    NSString *status = [FLEXAiFlexMCPServer status];
+    [self.statusRow setValueText:status];
+    self.statusRow.valueLabel.textColor = [status isEqualToString:@"运行中"]
+        ? UIColor.systemGreenColor
+        : UIColor.secondaryLabelColor;
+
+    BOOL auth = [FLEXAiFlexMCPServer authRequired];
+    self.authRow.toggle.on = auth;
+    [self.tokenRow setValueText:auth ? @"轻点复制" : @"未启用"];
+    self.tokenRow.userInteractionEnabled = auth;
+    self.customTokenRow.userInteractionEnabled = auth;
+    self.rotateRow.userInteractionEnabled = auth;
+    UIColor *dim = auth ? UIColor.labelColor : UIColor.secondaryLabelColor;
+    self.tokenRow.titleLabel.textColor = dim;
+    self.customTokenRow.titleLabel.textColor = dim;
+    self.rotateRow.titleLabel.textColor = auth ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
+
+    NSArray<NSNumber *> *states = @[
+        @([FLEXAiFlexMCPServer sensitiveEnabled]),
+        @([FLEXAiFlexMCPServer controlEnabled]),
+        @([FLEXAiFlexMCPServer scriptEnabled]),
+        @([FLEXAiFlexMCPServer tracingEnabled])
+    ];
+    for (NSUInteger index = 0; index < self.groupRows.count && index < states.count; index++) {
+        self.groupRows[index].toggle.on = states[index].boolValue;
+    }
 }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath{
- if(indexPath.section==1&&(indexPath.row==0||indexPath.row>=4)){
-  UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"permission"];
-  if(!cell)cell=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"permission"];
-  cell.accessoryView=nil;cell.accessoryType=UITableViewCellAccessoryNone;cell.selectionStyle=UITableViewCellSelectionStyleNone;
-  cell.textLabel.font=[UIFont systemFontOfSize:16];cell.textLabel.textColor=UIColor.labelColor;
-  cell.detailTextLabel.font=[UIFont systemFontOfSize:11];cell.detailTextLabel.textColor=UIColor.secondaryLabelColor;cell.detailTextLabel.numberOfLines=0;
-  NSArray *titles=@[@"授权保护",@"敏感读取",@"界面控制",@"脚本执行",@"方法追踪"];
-  NSArray *details=@[@"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接",
-   @"头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据",
-   @"点击、输入、滚动、手势、高亮与方法调用，会改变 App 状态",
-   @"在 WKWebView 执行 JavaScript，可能改变网页状态",
-   @"替换方法实现并记录调用，高风险，10 分钟自动停止"];
-  NSInteger index=indexPath.row==0?0:indexPath.row-3;
-  cell.textLabel.text=titles[index];cell.detailTextLabel.text=details[index];
-  UISwitch *toggle=[UISwitch new];toggle.tag=820+index;
-  if(index==0)toggle.on=[FLEXAiFlexMCPServer authRequired];
-  else if(index==1)toggle.on=[FLEXAiFlexMCPServer sensitiveEnabled];
-  else if(index==2)toggle.on=[FLEXAiFlexMCPServer controlEnabled];
-  else if(index==3)toggle.on=[FLEXAiFlexMCPServer scriptEnabled];
-  else toggle.on=[FLEXAiFlexMCPServer tracingEnabled];
-  if(index==0&&![FLEXAiFlexMCPServer isEnabled])cell.textLabel.textColor=UIColor.secondaryLabelColor;
-  else if(index>=3&&toggle.on)cell.textLabel.textColor=UIColor.systemOrangeColor;
-  [toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];
-  cell.accessoryView=toggle;return cell;
- }
- UITableViewCell *cell=[self cell:tableView];
- cell.accessoryView=nil;cell.accessoryType=UITableViewCellAccessoryNone;cell.selectionStyle=UITableViewCellSelectionStyleDefault;
- cell.detailTextLabel.text=nil;cell.textLabel.textColor=UIColor.labelColor;cell.textLabel.font=[UIFont systemFontOfSize:17];
- if(indexPath.section==0){
-  cell.textLabel.text=@[@"MCP 服务",@"监听端口",@"访问地址",@"运行状态"][indexPath.row];
-  if(indexPath.row==0){UISwitch *toggle=[UISwitch new];toggle.on=[FLEXAiFlexMCPServer isEnabled];[toggle addTarget:self action:@selector(toggleService:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;}
-  else if(indexPath.row==1){cell.detailTextLabel.text=[NSString stringWithFormat:@"%lu",(unsigned long)[FLEXAiFlexMCPServer port]];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}
-  else if(indexPath.row==2){cell.detailTextLabel.text=[FLEXAiFlexMCPServer endpoint];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}
-  else cell.detailTextLabel.text=[FLEXAiFlexMCPServer status];
- }
- else if(indexPath.section==1){
-  cell.textLabel.text=@[@"授权保护",@"访问令牌",@"自定义授权码",@"重新生成令牌",@"敏感读取",@"界面控制",@"脚本执行",@"方法追踪"][indexPath.row];
-  if(indexPath.row==0){UISwitch *toggle=[UISwitch new];toggle.on=[FLEXAiFlexMCPServer authRequired];toggle.tag=820;[toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;}
-  else if(indexPath.row<=3){
-   if(![FLEXAiFlexMCPServer authRequired])cell.textLabel.textColor=UIColor.secondaryLabelColor;
-   if(indexPath.row==1){cell.detailTextLabel.text=@"轻点复制";cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}
-   else if(indexPath.row==2)cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
-   else if([FLEXAiFlexMCPServer authRequired])cell.textLabel.textColor=UIColor.systemRedColor;
-  }
-  else{UISwitch *toggle=[UISwitch new];
-   BOOL on=indexPath.row==4?[FLEXAiFlexMCPServer sensitiveEnabled]:indexPath.row==5?[FLEXAiFlexMCPServer controlEnabled]:indexPath.row==6?[FLEXAiFlexMCPServer scriptEnabled]:[FLEXAiFlexMCPServer tracingEnabled];
-   toggle.on=on;toggle.tag=821+indexPath.row-4;[toggle addTarget:self action:@selector(toggleGroup:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;}
- }
- else{
-  if(indexPath.row==0){cell.textLabel.text=@"复制 MCP 客户端配置";cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}
-  else{
-   cell.textLabel.text=@"工具：status / read / sensitive / control / script / trace";
-   cell.textLabel.font=[UIFont systemFontOfSize:12];
-   cell.textLabel.numberOfLines=0;cell.textLabel.textColor=UIColor.secondaryLabelColor;
-   cell.selectionStyle=UITableViewCellSelectionStyleNone;
-  }
- }
- return cell;
+
+- (void)reloadSoon {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self refresh];
+    });
 }
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath{
- [tableView deselectRowAtIndexPath:indexPath animated:YES];
- if(indexPath.section==0&&indexPath.row==1){
-  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"监听端口" message:@"1024–65535，修改后自动重启服务。" preferredStyle:UIAlertControllerStyleAlert];
-  [alert addTextFieldWithConfigurationHandler:^(UITextField *field){field.keyboardType=UIKeyboardTypeNumberPad;field.text=[NSString stringWithFormat:@"%lu",(unsigned long)[FLEXAiFlexMCPServer port]];}];
-  [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-   NSUInteger port=[alert.textFields.firstObject.text integerValue];
-   if(port<1024||port>65535)return;
-   [FLEXAiFlexMCPServer setPort:port];
-   if([FLEXAiFlexMCPServer isEnabled]){[[FLEXAiFlexMCPServer shared] stop];[[FLEXAiFlexMCPServer shared] start];}
-   [self reloadSoon];
-  }]];
-  [self presentViewController:alert animated:YES completion:nil];return;
- }
- if(indexPath.section==0&&indexPath.row==2){
-  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"自定义访问地址" message:@"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用下方配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。" preferredStyle:UIAlertControllerStyleAlert];
-  [alert addTextFieldWithConfigurationHandler:^(UITextField *field){
-   field.text=[FLEXAiFlexMCPServer endpointHost];field.placeholder=@"IP 或域名，如 127.0.0.1";
-   field.keyboardType=UIKeyboardTypeURL;field.autocapitalizationType=UITextAutocapitalizationTypeNone;field.autocorrectionType=UITextAutocorrectionTypeNo;
-  }];
-  [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"本地地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];[self reloadSoon];}]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"局域网地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];[self reloadSoon];}]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-   if(![FLEXAiFlexMCPServer setEndpointHost:alert.textFields.firstObject.text]){[self toast:@"地址格式不正确"];return;}
-   [self reloadSoon];
-  }]];
-  [self presentViewController:alert animated:YES completion:nil];return;
- }
- if(indexPath.section==2&&indexPath.row==0){
-  NSString *url=[FLEXAiFlexMCPServer endpoint],*json;
-  if([FLEXAiFlexMCPServer authRequired])json=[NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\",\"headers\":{\"Authorization\":\"Bearer %@\"}}}}",url,[FLEXAiFlexMCPServer token]];
-  else json=[NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\"}}}",url];
-  UIPasteboard.generalPasteboard.string=json;
-  [self toast:@"已复制 MCP 客户端配置"];return;
- }
- if(indexPath.section==1&&![FLEXAiFlexMCPServer authRequired]&&indexPath.row>=1&&indexPath.row<=3){[self toast:@"当前已关闭授权保护"];return;}
- if(indexPath.section==1&&indexPath.row==1){
-  NSString *token=[FLEXAiFlexMCPServer token];UIPasteboard.generalPasteboard.string=token;
-  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"访问令牌" message:token preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
-  [self presentViewController:alert animated:YES completion:nil];return;
- }
- if(indexPath.section==1&&indexPath.row==2){
-  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"自定义授权码" message:@"6–64 位字母、数字、点、下划线或短横线。" preferredStyle:UIAlertControllerStyleAlert];
-  [alert addTextFieldWithConfigurationHandler:^(UITextField *field){
-   field.placeholder=@"输入授权码";
-   field.autocapitalizationType=UITextAutocapitalizationTypeNone;
-   field.autocorrectionType=UITextAutocorrectionTypeNo;
-  }];
-  [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-   if(![FLEXAiFlexMCPServer setToken:alert.textFields.firstObject.text]){[self toast:@"授权码格式不正确"];return;}
-   if([FLEXAiFlexMCPServer isEnabled]){[[FLEXAiFlexMCPServer shared] stop];[[FLEXAiFlexMCPServer shared] start];}
-   [self toast:@"已更新授权码"];
-  }]];
-  [self presentViewController:alert animated:YES completion:nil];return;
- }
- if(indexPath.section==1&&indexPath.row==3){
-  UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"重新生成令牌" message:@"旧令牌立即失效，需要同步修改电脑端 MCP 配置。" preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"重新生成" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){
-   [FLEXAiFlexMCPServer rotateToken];
-   if([FLEXAiFlexMCPServer isEnabled]){[[FLEXAiFlexMCPServer shared] stop];[[FLEXAiFlexMCPServer shared] start];}
-   [self toast:@"已生成新令牌"];
-  }]];
-  [self presentViewController:alert animated:YES completion:nil];return;
- }
+
+#pragma mark - Actions
+
+- (void)toggleService:(BOOL)on {
+    [FLEXAiFlexMCPServer setEnabled:on];
+    if (on) [[FLEXAiFlexMCPServer shared] start];
+    else [[FLEXAiFlexMCPServer shared] stop];
+    [self reloadSoon];
 }
-- (void)toggleService:(UISwitch *)sender{
- [FLEXAiFlexMCPServer setEnabled:sender.on];
- if(sender.on)[[FLEXAiFlexMCPServer shared] start];else [[FLEXAiFlexMCPServer shared] stop];
- [self reloadSoon];
+
+- (void)setGroup:(NSInteger)group on:(BOOL)on {
+    switch (group) {
+        case 0: [FLEXAiFlexMCPServer setAuthRequired:on]; break;
+        case 1: [FLEXAiFlexMCPServer setSensitiveEnabled:on]; break;
+        case 2: [FLEXAiFlexMCPServer setControlEnabled:on]; break;
+        case 3: [FLEXAiFlexMCPServer setScriptEnabled:on]; break;
+        default: [FLEXAiFlexMCPServer setTracingEnabled:on]; break;
+    }
+    [self reloadSoon];
 }
-- (void)toggleGroup:(UISwitch *)sender{
- if(sender.tag==820){[FLEXAiFlexMCPServer setAuthRequired:sender.on];[self reloadSoon];return;}
- if(sender.tag==821)[FLEXAiFlexMCPServer setSensitiveEnabled:sender.on];
- else if(sender.tag==822)[FLEXAiFlexMCPServer setControlEnabled:sender.on];
- else if(sender.tag==823)[FLEXAiFlexMCPServer setScriptEnabled:sender.on];
- else [FLEXAiFlexMCPServer setTracingEnabled:sender.on];
- [self reloadSoon];
+
+- (void)editPort {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"监听端口"
+                                                                   message:@"1024–65535，修改后自动重启服务。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.keyboardType = UIKeyboardTypeNumberPad;
+        field.text = [NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]];
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSUInteger port = [alert.textFields.firstObject.text integerValue];
+        if (port < 1024 || port > 65535) {
+            [weakSelf toast:@"端口需在 1024–65535 之间"];
+            return;
+        }
+        [FLEXAiFlexMCPServer setPort:port];
+        if ([FLEXAiFlexMCPServer isEnabled]) {
+            [[FLEXAiFlexMCPServer shared] stop];
+            [[FLEXAiFlexMCPServer shared] start];
+        }
+        [weakSelf reloadSoon];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
-- (void)toast:(NSString *)text{
- UIAlertController *alert=[UIAlertController alertControllerWithTitle:text message:nil preferredStyle:UIAlertControllerStyleAlert];
- [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
- [self presentViewController:alert animated:YES completion:nil];
+
+- (void)editEndpoint {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义访问地址"
+        message:@"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用当前配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = [FLEXAiFlexMCPServer endpointHost];
+        field.placeholder = @"IP 或域名，如 127.0.0.1";
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"本地地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [FLEXAiFlexMCPServer setEndpointHost:@"127.0.0.1"];
+        [weakSelf reloadSoon];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"局域网地址" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [FLEXAiFlexMCPServer setEndpointHost:[FLEXAiFlexMCPServer localAddress]];
+        [weakSelf reloadSoon];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        if (![FLEXAiFlexMCPServer setEndpointHost:alert.textFields.firstObject.text]) {
+            [weakSelf toast:@"地址格式不正确"];
+            return;
+        }
+        [weakSelf reloadSoon];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
+
+- (void)copyToken {
+    if (![FLEXAiFlexMCPServer authRequired]) {
+        [self toast:@"当前已关闭授权保护"];
+        return;
+    }
+    NSString *token = [FLEXAiFlexMCPServer token];
+    UIPasteboard.generalPasteboard.string = token ?: @"";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"访问令牌"
+                                                                   message:token
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)editCustomToken {
+    if (![FLEXAiFlexMCPServer authRequired]) {
+        [self toast:@"当前已关闭授权保护"];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义授权码"
+                                                                   message:@"6–64 位字母、数字、点、下划线或短横线。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"输入授权码";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        if (![FLEXAiFlexMCPServer setToken:alert.textFields.firstObject.text]) {
+            [weakSelf toast:@"授权码格式不正确"];
+            return;
+        }
+        if ([FLEXAiFlexMCPServer isEnabled]) {
+            [[FLEXAiFlexMCPServer shared] stop];
+            [[FLEXAiFlexMCPServer shared] start];
+        }
+        [weakSelf toast:@"已更新授权码"];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)rotateToken {
+    if (![FLEXAiFlexMCPServer authRequired]) {
+        [self toast:@"当前已关闭授权保护"];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重新生成令牌"
+                                                                   message:@"旧令牌立即失效，需要同步修改电脑端 MCP 配置。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"重新生成" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [FLEXAiFlexMCPServer rotateToken];
+        if ([FLEXAiFlexMCPServer isEnabled]) {
+            [[FLEXAiFlexMCPServer shared] stop];
+            [[FLEXAiFlexMCPServer shared] start];
+        }
+        [weakSelf toast:@"已生成新令牌"];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)copyClientConfiguration {
+    NSString *url = [FLEXAiFlexMCPServer endpoint], *json;
+    if ([FLEXAiFlexMCPServer authRequired]) {
+        json = [NSString stringWithFormat:
+            @"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\",\"headers\":{\"Authorization\":\"Bearer %@\"}}}}",
+            url, [FLEXAiFlexMCPServer token]];
+    } else {
+        json = [NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\"}}}", url];
+    }
+    UIPasteboard.generalPasteboard.string = json;
+    [self toast:@"已复制 MCP 客户端配置"];
+}
+
+- (void)toast:(NSString *)text {
+    UIWindow *window = self.view.window ?: UIApplication.sharedApplication.keyWindow;
+    UIView *host = window ?: self.view;
+    UILabel *label = [UILabel new];
+    label.text = text;
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    label.textColor = UIColor.whiteColor;
+    label.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.82];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
+    label.layer.cornerRadius = 16;
+    label.layer.masksToBounds = YES;
+    label.alpha = 0;
+    CGFloat maxWidth = CGRectGetWidth(host.bounds) - 48;
+    CGRect textBox = [text boundingRectWithSize:CGSizeMake(maxWidth - 28, CGFLOAT_MAX)
+                                        options:NSStringDrawingUsesLineFragmentOrigin
+                                     attributes:@{NSFontAttributeName: label.font}
+                                        context:nil];
+    label.frame = CGRectMake(0, 0, MIN(maxWidth, CGRectGetWidth(textBox) + 28),
+                             MAX(36, CGRectGetHeight(textBox) + 20));
+    label.center = CGPointMake(CGRectGetMidX(host.bounds), CGRectGetMidY(host.bounds));
+    label.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin
+        | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    [host addSubview:label];
+    [UIView animateWithDuration:0.18 animations:^{ label.alpha = 1; } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.3 delay:1.1 options:0 animations:^{ label.alpha = 0; } completion:^(BOOL finished) {
+            [label removeFromSuperview];
+        }];
+    }];
+}
+
 @end

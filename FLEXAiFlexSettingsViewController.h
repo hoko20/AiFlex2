@@ -1,4 +1,4 @@
 #import <UIKit/UIKit.h>
 
-@interface FLEXAiFlexSettingsViewController : UITableViewController
+@interface FLEXAiFlexSettingsViewController : UIViewController
 @end
