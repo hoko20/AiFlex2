@@ -89,6 +89,15 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
     }
 }
 
+// FLEX 的页面都是浅底卡片 + 不透明顶栏，状态栏文字要跟着底色走：
+// 浅色用深色文字，暗色用亮色文字，避免白底白字。
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    if (self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+        return UIStatusBarStyleLightContent;
+    }
+    return UIStatusBarStyleDarkContent;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
 

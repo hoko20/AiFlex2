@@ -1,6 +1,6 @@
 PACKAGE_IDENTIFIER = com.hoko20.aiflex2
 PACKAGE_NAME = AiFlex2
-PACKAGE_VERSION = 2.0.6
+PACKAGE_VERSION = 2.0.7
 PACKAGE_ARCHITECTURE = arm64
 PACKAGE_REVISION = 1
 PACKAGE_SECTION = Tweaks
@@ -10,7 +10,7 @@ PACKAGE_DESCRIPTION = FLEX调试工具 · AiFlex2 MCP
 define Package/com.hoko20.aiflex2
   Package: com.hoko20.aiflex2
   Name: AiFlex2
-  Version: 2.0.6
+  Version: 2.0.7
   Architecture: arm64
   Author: FLEX Team & hoko20
   Section: Tweaks
