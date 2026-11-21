@@ -70,12 +70,40 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     [self.refreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
 
     [self syncRuntimeContext];
+    [self configureStableNavigationAppearance];
     [self refresh];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self configureStableNavigationAppearance];
     [self refresh];
+}
+
+// 首次 present 面板时 FLEX 的 explorerWindow 可能尚未成为 keyWindow，宿主 App 的
+// 全局 UIBarButtonItem/UINavigationBar appearance 会泄漏进这个裸 UINavigationController，
+// 造成按钮退化成纯文字、透明导航栏压住标题、状态栏变白字；第二次打开因复用了已稳定的
+// nav 与 window 才正常。这里显式固定本页外观，不依赖 present 时序，保证每次一致。
+- (void)configureStableNavigationAppearance {
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;
+    nav.navigationBar.tintColor = UIColor.systemBlueColor;
+    if (@available(iOS 15.0, *)) {
+        UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
+        [appearance configureWithOpaqueBackground];
+        appearance.titleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
+        appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: UIColor.labelColor};
+        nav.navigationBar.standardAppearance = appearance;
+        nav.navigationBar.scrollEdgeAppearance = appearance;
+        nav.navigationBar.compactAppearance = appearance;
+        nav.navigationBar.compactScrollEdgeAppearance = appearance;
+    }
+    // 让状态栏由本页决定（黑字），而不是未成为 key 的 FLEX window / 宿主 App。
+    nav.modalPresentationCapturesStatusBarAppearance = YES;
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    return UIStatusBarStyleDarkContent;
 }
 
 - (void)viewDidLayoutSubviews {
