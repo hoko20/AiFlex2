@@ -6,15 +6,6 @@
 #import "FLEXManager+Private.h"
 #import "FLEXUtility.h"
 
-typedef NS_ENUM(NSInteger, AXSection) {
-    AXSectionContext = 0,
-    AXSectionActions,
-    AXSectionPermissions,
-    AXSectionTools,
-    AXSectionUsage,
-    AXSectionCount
-};
-
 static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 static NSString *AXShortText(NSString *text, NSUInteger limit) {
@@ -23,16 +14,297 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     return [[text substringToIndex:limit] stringByAppendingString:@"…"];
 }
 
+#pragma mark - Liquid Glass primitives
+
+// iOS 26 起系统提供 UIGlassEffect。本 dylib 用较低 SDK 编译，所以只在运行时探测，
+// 找不到（iOS 15–18）就退回系统毛玻璃材质，保证外观与可读性都不塌。
+static UIVisualEffect *AXGlassEffect(void) {
+    static UIVisualEffect *effect;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = NSClassFromString(@"UIGlassEffect");
+        if (!cls) return;
+        @try {
+            SEL selector = @selector(effect);
+            if ([cls respondsToSelector:selector]) {
+                id (*function)(id, SEL) = (id (*)(id, SEL))[cls methodForSelector:selector];
+                id value = function ? function(cls, selector) : nil;
+                if ([value isKindOfClass:UIVisualEffect.class]) effect = value;
+            }
+        } @catch (__unused NSException *exception) {}
+        if (!effect) {
+            @try {
+                id value = [[cls alloc] init];
+                if ([value isKindOfClass:UIVisualEffect.class]) effect = value;
+            } @catch (__unused NSException *exception) {}
+        }
+    });
+    return effect;
+}
+
+@interface AXGradientView : UIView
+@property (nonatomic, copy) NSArray *colors;
+@property (nonatomic, assign) CGPoint gradientStart;
+@property (nonatomic, assign) CGPoint gradientEnd;
+@end
+
+@implementation AXGradientView
+
++ (Class)layerClass { return CAGradientLayer.class; }
+
+- (CAGradientLayer *)gradientLayer { return (CAGradientLayer *)self.layer; }
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        self.userInteractionEnabled = NO;
+        self.gradientLayer.startPoint = CGPointMake(0, 0);
+        self.gradientLayer.endPoint = CGPointMake(1, 1);
+    }
+    return self;
+}
+
+- (void)setColors:(NSArray *)colors {
+    _colors = [colors copy];
+    self.gradientLayer.colors = colors;
+}
+
+- (void)setGradientStart:(CGPoint)point {
+    _gradientStart = point;
+    self.gradientLayer.startPoint = point;
+}
+
+- (void)setGradientEnd:(CGPoint)point {
+    _gradientEnd = point;
+    self.gradientLayer.endPoint = point;
+}
+
+@end
+
+// 玻璃卡片：有 UIGlassEffect 时就是系统液态玻璃，没有时是毛玻璃 + 极淡底色，
+// 两种情况都保持圆角、描边和可读性一致。
+@interface AXGlassCard : UIView
+- (instancetype)initWithRadius:(CGFloat)radius;
+@end
+
+@implementation AXGlassCard {
+    CGFloat _radius;
+}
+
+- (instancetype)initWithRadius:(CGFloat)radius {
+    self = [super initWithFrame:CGRectZero];
+    if (!self) return nil;
+    _radius = radius;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    self.layer.cornerRadius = radius;
+    self.layer.cornerCurve = kCACornerCurveContinuous;
+    self.clipsToBounds = YES;
+    // 底色保证在玻璃不可用时也不会变成全透明卡片。
+    self.backgroundColor = [UIColor.secondarySystemBackgroundColor colorWithAlphaComponent:0.78];
+
+    UIVisualEffect *effect = AXGlassEffect();
+    if (!effect) effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
+    glass.translatesAutoresizingMaskIntoConstraints = NO;
+    glass.userInteractionEnabled = NO;
+    [self addSubview:glass];
+    [NSLayoutConstraint activateConstraints:@[
+        [glass.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [glass.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [glass.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [glass.bottomAnchor constraintEqualToAnchor:self.bottomAnchor]
+    ]];
+    [self updateStroke];
+    return self;
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    [super traitCollectionDidChange:previous];
+    if (!previous) return;
+    if (previous.userInterfaceStyle == self.traitCollection.userInterfaceStyle) return;
+    [self updateStroke];
+}
+
+- (void)updateStroke {
+    self.layer.borderWidth = 0.5;
+    self.layer.borderColor = [UIColor.separatorColor
+        resolvedColorWithTraitCollection:self.traitCollection].CGColor;
+}
+
+@end
+
+// 单行条目：图标磁贴 + 标题/副标题 + 右侧值/开关/箭头。
+@interface AXRowView : UIControl
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *subtitleLabel;
+@property (nonatomic, strong) UILabel *valueLabel;
+@property (nonatomic, strong) UISwitch *toggle;
+@property (nonatomic, copy) void (^onTap)(void);
+@property (nonatomic, copy) void (^onToggle)(BOOL on);
+- (void)setSymbol:(NSString *)symbol tint:(UIColor *)tint;
+- (void)setValueText:(NSString *)text;
+- (void)setShowsChevron:(BOOL)shows;
+- (void)setShowsSwitch:(BOOL)shows;
+@end
+
+@implementation AXRowView {
+    UIView *_tile;
+    UIImageView *_icon;
+    UIImageView *_chevron;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    self.backgroundColor = UIColor.clearColor;
+
+    _tile = [UIView new];
+    _tile.translatesAutoresizingMaskIntoConstraints = NO;
+    _tile.layer.cornerRadius = 9;
+    _tile.layer.cornerCurve = kCACornerCurveContinuous;
+    [self addSubview:_tile];
+
+    _icon = [UIImageView new];
+    _icon.translatesAutoresizingMaskIntoConstraints = NO;
+    _icon.contentMode = UIViewContentModeScaleAspectFit;
+    [_tile addSubview:_icon];
+
+    _titleLabel = [UILabel new];
+    _titleLabel.font = [UIFont systemFontOfSize:16];
+    _titleLabel.textColor = UIColor.labelColor;
+
+    _subtitleLabel = [UILabel new];
+    _subtitleLabel.font = [UIFont systemFontOfSize:12];
+    _subtitleLabel.textColor = UIColor.secondaryLabelColor;
+    _subtitleLabel.numberOfLines = 2;
+    _subtitleLabel.hidden = YES;
+
+    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _subtitleLabel]];
+    texts.axis = UILayoutConstraintAxisVertical;
+    texts.spacing = 2;
+    texts.alignment = UIStackViewAlignmentFill;
+    texts.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:texts];
+
+    _valueLabel = [UILabel new];
+    _valueLabel.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightRegular];
+    _valueLabel.textColor = UIColor.secondaryLabelColor;
+    _valueLabel.textAlignment = NSTextAlignmentRight;
+    _valueLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    _valueLabel.hidden = YES;
+    [_valueLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisHorizontal];
+    [_valueLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+    _chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold]]];
+    _chevron.tintColor = UIColor.tertiaryLabelColor;
+    _chevron.contentMode = UIViewContentModeScaleAspectFit;
+    _chevron.hidden = YES;
+    [_chevron.widthAnchor constraintEqualToConstant:9].active = YES;
+
+    _toggle = [UISwitch new];
+    _toggle.hidden = YES;
+    [_toggle addTarget:self action:@selector(toggleFired) forControlEvents:UIControlEventValueChanged];
+
+    UIStackView *trailing = [[UIStackView alloc] initWithArrangedSubviews:@[_valueLabel, _toggle, _chevron]];
+    trailing.axis = UILayoutConstraintAxisHorizontal;
+    trailing.spacing = 8;
+    trailing.alignment = UIStackViewAlignmentCenter;
+    trailing.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:trailing];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_tile.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:16],
+        [_tile.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [_tile.widthAnchor constraintEqualToConstant:30],
+        [_tile.heightAnchor constraintEqualToConstant:30],
+        [_icon.centerXAnchor constraintEqualToAnchor:_tile.centerXAnchor],
+        [_icon.centerYAnchor constraintEqualToAnchor:_tile.centerYAnchor],
+        [_icon.widthAnchor constraintEqualToConstant:17],
+        [_icon.heightAnchor constraintEqualToConstant:17],
+        [texts.leadingAnchor constraintEqualToAnchor:_tile.trailingAnchor constant:12],
+        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:trailing.leadingAnchor constant:-8],
+        [texts.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [texts.topAnchor constraintGreaterThanOrEqualToAnchor:self.topAnchor constant:11],
+        [texts.bottomAnchor constraintLessThanOrEqualToAnchor:self.bottomAnchor constant:-11],
+        [trailing.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16],
+        [trailing.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [self.heightAnchor constraintGreaterThanOrEqualToConstant:54]
+    ]];
+
+    // 让行高跟着文字长，而不是把两行副标题压扁截断。
+    [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [_subtitleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+
+    [self addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
+    return self;
+}
+
+- (void)setSymbol:(NSString *)symbol tint:(UIColor *)tint {
+    _icon.image = [UIImage systemImageNamed:symbol
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]];
+    _icon.tintColor = tint;
+    _tile.backgroundColor = [tint colorWithAlphaComponent:0.15];
+}
+
+- (void)setValueText:(NSString *)text {
+    _valueLabel.text = text;
+    _valueLabel.hidden = text.length == 0;
+}
+
+- (void)setShowsChevron:(BOOL)shows {
+    _chevron.hidden = !shows;
+    if (shows) self.userInteractionEnabled = YES;
+}
+
+- (void)setShowsSwitch:(BOOL)shows {
+    _toggle.hidden = !shows;
+    if (shows) self.userInteractionEnabled = YES;
+}
+
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    self.backgroundColor = highlighted
+        ? [UIColor.labelColor colorWithAlphaComponent:0.06]
+        : UIColor.clearColor;
+}
+
+- (void)tapped {
+    if (self.onTap) self.onTap();
+}
+
+- (void)toggleFired {
+    if (self.onToggle) self.onToggle(self.toggle.isOn);
+}
+
+@end
+
+#pragma mark - Panel
+
 @interface FLEXAiFlex2ViewController ()
 @property (nonatomic, copy) NSString *report;
 @property (nonatomic, copy) NSString *className;
 @property (nonatomic) BOOL minimized;
 @property (nonatomic) BOOL uiTransitioning;
 
-@property (nonatomic) UILabel *statusPill;
-@property (nonatomic) UILabel *endpointLabel;
-@property (nonatomic) UILabel *tokenLabel;
-@property (nonatomic) UILabel *heroSubtitle;
+@property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) UIRefreshControl *refreshControl;
+
+@property (nonatomic, strong) UIView *statusChip;
+@property (nonatomic, strong) UIView *statusDot;
+@property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UILabel *endpointLabel;
+@property (nonatomic, strong) UILabel *tokenLabel;
+@property (nonatomic, strong) UILabel *heroSubtitle;
+
+@property (nonatomic, strong) AXRowView *contextObjectRow;
+@property (nonatomic, strong) AXRowView *contextReportRow;
+@property (nonatomic, strong) AXRowView *restartRow;
+@property (nonatomic, copy) NSArray<UISwitch *> *permissionSwitches;
+@property (nonatomic, copy) NSArray<AXRowView *> *toolRowViews;
+@property (nonatomic, strong) UILabel *permissionFootnote;
 @end
 
 @implementation FLEXAiFlex2ViewController
@@ -40,7 +312,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
 + (instancetype)aiFlex2CurrentPanel { return AXCurrentPanel; }
 
 - (instancetype)initWithReport:(NSString *)report className:(NSString *)className {
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _report = [report copy] ?: @"";
         _className = [className copy] ?: @"未知对象";
@@ -52,6 +324,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     [super viewDidLoad];
     AXCurrentPanel = self;
     self.title = @"AiFlex2";
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
 
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"chevron.down"]
@@ -64,12 +337,40 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
                              target:self
                              action:@selector(doneTapped)];
 
-    self.tableView.rowHeight = 48;
-    self.tableView.tableHeaderView = [self buildHeader];
+    // 顶部一抹柔光，给玻璃卡片提供可折射的底色；不依赖任何 iOS 26 专属 API。
+    AXGradientView *bloom = [AXGradientView new];
+    bloom.colors = @[
+        (__bridge id)[[UIColor systemBlueColor] colorWithAlphaComponent:0.22].CGColor,
+        (__bridge id)[[UIColor systemIndigoColor] colorWithAlphaComponent:0.10].CGColor,
+        (__bridge id)[UIColor clearColor].CGColor
+    ];
+    bloom.gradientStart = CGPointMake(0.15, 0);
+    bloom.gradientEnd = CGPointMake(0.85, 0.55);
+    [self.view addSubview:bloom];
+    [NSLayoutConstraint activateConstraints:@[
+        [bloom.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [bloom.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [bloom.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [bloom.heightAnchor constraintEqualToAnchor:self.view.heightAnchor multiplier:0.55]
+    ]];
+
+    self.scrollView = [UIScrollView new];
+    self.scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.scrollView.alwaysBounceVertical = YES;
+    self.scrollView.showsVerticalScrollIndicator = YES;
+    [self.view addSubview:self.scrollView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+    ]];
+
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
+    [self.scrollView addSubview:self.refreshControl];
 
-    [self syncRuntimeContext];
+    [self buildContent];
     [self refresh];
 }
 
@@ -78,203 +379,458 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     [self refresh];
 }
 
-// 不再覆盖导航栏 appearance。宿主 App 的全局 appearance proxy 只会影响它自己的窗口；
-// 这里是 FLEX window 里独立的 UINavigationController，交给系统默认样式即可获得
-// iOS 26 的液态玻璃导航栏与圆形按钮。之前显式设置 opaque 背景 + 空白按钮 appearance
-// 反而把系统默认材质和按钮底色抹掉，导致首次打开时看到纯文字按钮和灰色导航条。
+// 不覆盖导航栏 appearance：交给系统默认样式，iOS 26 下自动是液态玻璃导航栏。
 - (UIStatusBarStyle)preferredStatusBarStyle {
     return UIStatusBarStyleDarkContent;
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    [self sizeHeader];
+#pragma mark - Layout
+
+- (void)buildContent {
+    UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[
+        [self buildHero],
+        [self sectionWithTitle:@"当前现场" card:[self buildContextCard] footnote:nil],
+        [self sectionWithTitle:@"快捷操作" card:[self buildActionsCard] footnote:nil],
+        [self sectionWithTitle:@"授权" card:[self buildPermissionCard] footnote:nil],
+        [self sectionWithTitle:@"可用工具" card:[self buildToolsCard]
+                      footnote:@"工具组关闭后，对应工具不会出现在 MCP tools/list 中。"],
+        [self sectionWithTitle:@"使用方式" card:[self buildUsageCard] footnote:nil]
+    ]];
+    content.axis = UILayoutConstraintAxisVertical;
+    content.spacing = 24;
+    content.alignment = UIStackViewAlignmentFill;
+    content.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.scrollView addSubview:content];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [content.topAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.topAnchor constant:10],
+        [content.leadingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.leadingAnchor constant:16],
+        [content.trailingAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.trailingAnchor constant:-16],
+        [content.bottomAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.bottomAnchor constant:-32],
+        [content.widthAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.widthAnchor constant:-32]
+    ]];
 }
 
-#pragma mark - Header
+- (UIView *)sectionWithTitle:(NSString *)title card:(UIView *)card footnote:(NSString *)footnote {
+    NSMutableArray *views = [NSMutableArray arrayWithObjects:[self sectionLabel:title], card, nil];
+    if (footnote.length) [views addObject:[self footnoteLabel:footnote]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:views];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 8;
+    stack.alignment = UIStackViewAlignmentFill;
+    if (footnote.length) [stack setCustomSpacing:7 afterView:card];
+    return stack;
+}
 
-- (UIView *)buildHeader {
-    UIView *hero = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 210)];
-    hero.backgroundColor = UIColor.clearColor;
+- (UILabel *)sectionLabel:(NSString *)text {
+    UILabel *label = [UILabel new];
+    label.text = text;
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    label.textColor = UIColor.secondaryLabelColor;
+    return label;
+}
 
-    UIView *card = [UIView new];
-    card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
-    card.layer.cornerRadius = 20;
-    card.layer.masksToBounds = YES;
-    [hero addSubview:card];
+- (UILabel *)footnoteLabel:(NSString *)text {
+    UILabel *label = [UILabel new];
+    label.text = text;
+    label.font = [UIFont systemFontOfSize:11.5];
+    label.textColor = UIColor.tertiaryLabelColor;
+    label.numberOfLines = 0;
+    return label;
+}
 
-    // iOS 26+ 使用运行时发现的方式挂载液态玻璃材质；低版本或与新 SDK 编译的
-    // 宿主环境不一致时安全降级为系统 grouped 背景，不依赖编译期符号。
-    BOOL glassApplied = NO;
-    Class glassClass = NSClassFromString(@"UIGlassEffect");
-    if (glassClass) {
-        @try {
-            id effect = [[glassClass alloc] init];
-            if ([effect isKindOfClass:[UIVisualEffect class]]) {
-                UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
-                glass.translatesAutoresizingMaskIntoConstraints = NO;
-                glass.layer.cornerRadius = 20;
-                glass.layer.masksToBounds = YES;
-                [card insertSubview:glass atIndex:0];
-                [NSLayoutConstraint activateConstraints:@[
-                    [glass.topAnchor constraintEqualToAnchor:card.topAnchor],
-                    [glass.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
-                    [glass.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
-                    [glass.bottomAnchor constraintEqualToAnchor:card.bottomAnchor]
-                ]];
-                card.backgroundColor = UIColor.clearColor;
-                glassApplied = YES;
-            }
-        } @catch (__unused NSException *exception) {
-            glassApplied = NO;
-        }
+- (UIView *)separatorView {
+    UIView *wrap = [UIView new];
+    wrap.translatesAutoresizingMaskIntoConstraints = NO;
+    UIView *line = [UIView new];
+    line.translatesAutoresizingMaskIntoConstraints = NO;
+    line.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.08];
+    [wrap addSubview:line];
+    [NSLayoutConstraint activateConstraints:@[
+        [line.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor constant:58],
+        [line.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor],
+        [line.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+        [line.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+        [line.heightAnchor constraintEqualToConstant:0.5]
+    ]];
+    return wrap;
+}
+
+- (AXGlassCard *)cardWithRows:(NSArray<UIView *> *)rows radius:(CGFloat)radius {
+    AXGlassCard *card = [[AXGlassCard alloc] initWithRadius:radius];
+    NSMutableArray *views = [NSMutableArray new];
+    for (NSUInteger index = 0; index < rows.count; index++) {
+        if (index) [views addObject:[self separatorView]];
+        [views addObject:rows[index]];
     }
-    if (!glassApplied && @available(iOS 13.0, *)) {
-        UIVisualEffectView *material = [[UIVisualEffectView alloc]
-            initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
-        material.translatesAutoresizingMaskIntoConstraints = NO;
-        material.layer.cornerRadius = 20;
-        material.layer.masksToBounds = YES;
-        [card insertSubview:material atIndex:0];
-        [NSLayoutConstraint activateConstraints:@[
-            [material.topAnchor constraintEqualToAnchor:card.topAnchor],
-            [material.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
-            [material.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
-            [material.bottomAnchor constraintEqualToAnchor:card.bottomAnchor]
-        ]];
-        card.backgroundColor = [[UIColor secondarySystemGroupedBackgroundColor] colorWithAlphaComponent:0.65];
-    }
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:views];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:4],
+        [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-4]
+    ]];
+    return card;
+}
 
-    UIView *badge = [UIView new];
-    badge.translatesAutoresizingMaskIntoConstraints = NO;
-    badge.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.14];
-    badge.layer.cornerRadius = 12;
+#pragma mark - Hero
 
-    UIImageView *icon = [UIImageView new];
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.image = [UIImage systemImageNamed:@"sparkles"];
-    icon.tintColor = UIColor.systemBlueColor;
-    icon.contentMode = UIViewContentModeScaleAspectFit;
-    [badge addSubview:icon];
+- (UIView *)buildHero {
+    AXGlassCard *card = [[AXGlassCard alloc] initWithRadius:26];
+
+    AXGradientView *badge = [AXGradientView new];
+    badge.colors = @[
+        (__bridge id)[UIColor systemBlueColor].CGColor,
+        (__bridge id)[UIColor systemIndigoColor].CGColor
+    ];
+    badge.layer.cornerRadius = 15;
+    badge.layer.cornerCurve = kCACornerCurveContinuous;
+    badge.clipsToBounds = YES;
+    UIImageView *spark = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"sparkles"
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightSemibold]]];
+    spark.tintColor = UIColor.whiteColor;
+    spark.translatesAutoresizingMaskIntoConstraints = NO;
+    [badge addSubview:spark];
+    [NSLayoutConstraint activateConstraints:@[
+        [badge.widthAnchor constraintEqualToConstant:52],
+        [badge.heightAnchor constraintEqualToConstant:52],
+        [spark.centerXAnchor constraintEqualToAnchor:badge.centerXAnchor],
+        [spark.centerYAnchor constraintEqualToAnchor:badge.centerYAnchor]
+    ]];
 
     UILabel *title = [UILabel new];
     title.text = @"AiFlex2";
     title.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
+    title.textColor = UIColor.labelColor;
 
     UILabel *subtitle = [UILabel new];
-    subtitle.text = @"FLEX++ 运行时 · MCP 直连";
-    subtitle.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    subtitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
     subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.lineBreakMode = NSLineBreakByTruncatingTail;
     self.heroSubtitle = subtitle;
 
-    UIStackView *titles = [[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle]];
+    UIStackView *titles = [[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle, [self buildStatusChip]]];
     titles.axis = UILayoutConstraintAxisVertical;
-    titles.spacing = 2;
+    titles.spacing = 3;
+    titles.alignment = UIStackViewAlignmentFill;
+    [titles setCustomSpacing:9 afterView:subtitle];
 
-    UILabel *pill = [UILabel new];
-    pill.textAlignment = NSTextAlignmentCenter;
-    pill.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    pill.layer.cornerRadius = 11;
-    pill.layer.masksToBounds = YES;
-    self.statusPill = pill;
+    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[badge, titles]];
+    head.axis = UILayoutConstraintAxisHorizontal;
+    head.spacing = 13;
+    head.alignment = UIStackViewAlignmentTop;
 
-    UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[badge, titles, pill]];
-    topRow.axis = UILayoutConstraintAxisHorizontal;
-    topRow.spacing = 10;
-    topRow.alignment = UIStackViewAlignmentCenter;
-    [titles setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+    UILabel *hint = [self footnoteLabel:@"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行"];
 
-    UILabel *addressCaption = [self captionLabel:@"访问地址"];
-    UILabel *addressValue = [UILabel new];
-    addressValue.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    addressValue.textColor = UIColor.secondaryLabelColor;
-    addressValue.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    addressValue.userInteractionEnabled = YES;
-    [addressValue addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(editEndpoint)]];
-    self.endpointLabel = addressValue;
-
-    UILabel *tokenCaption = [self captionLabel:@"访问令牌"];
-    UILabel *tokenValue = [UILabel new];
-    tokenValue.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    tokenValue.textColor = UIColor.secondaryLabelColor;
-    tokenValue.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    tokenValue.userInteractionEnabled = YES;
-    [tokenValue addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyToken)]];
-    self.tokenLabel = tokenValue;
-
-    UILabel *hint = [UILabel new];
-    hint.text = @"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行";
-    hint.font = [UIFont systemFontOfSize:11];
-    hint.textColor = UIColor.tertiaryLabelColor;
-    hint.numberOfLines = 0;
-
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
-        topRow, addressCaption, addressValue, tokenCaption, tokenValue, hint
-    ]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[head, [self buildFields], hint]];
     stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 6;
+    stack.spacing = 14;
+    stack.alignment = UIStackViewAlignmentFill;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:stack];
-
     [NSLayoutConstraint activateConstraints:@[
-        [card.topAnchor constraintEqualToAnchor:hero.topAnchor constant:8],
-        [card.leadingAnchor constraintEqualToAnchor:hero.leadingAnchor constant:20],
-        [card.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-20],
-        [card.bottomAnchor constraintEqualToAnchor:hero.bottomAnchor constant:-6],
-        [badge.widthAnchor constraintEqualToConstant:46],
-        [badge.heightAnchor constraintEqualToConstant:46],
-        [icon.centerXAnchor constraintEqualToAnchor:badge.centerXAnchor],
-        [icon.centerYAnchor constraintEqualToAnchor:badge.centerYAnchor],
-        [icon.widthAnchor constraintEqualToConstant:24],
-        [icon.heightAnchor constraintEqualToConstant:24],
-        [pill.widthAnchor constraintEqualToConstant:70],
-        [pill.heightAnchor constraintEqualToConstant:22],
         [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
         [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
         [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14]
+        [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16]
     ]];
-    return hero;
+    return card;
 }
 
-- (UILabel *)captionLabel:(NSString *)text {
+- (UIView *)buildStatusChip {
+    UIView *chip = [UIView new];
+    chip.translatesAutoresizingMaskIntoConstraints = NO;
+    chip.layer.cornerRadius = 13;
+    chip.clipsToBounds = YES;
+    self.statusChip = chip;
+
+    UIView *dot = [UIView new];
+    dot.translatesAutoresizingMaskIntoConstraints = NO;
+    dot.layer.cornerRadius = 3;
+    dot.layer.cornerCurve = kCACornerCurveContinuous;
+    self.statusDot = dot;
+
     UILabel *label = [UILabel new];
-    label.text = text;
-    label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
-    label.textColor = UIColor.tertiaryLabelColor;
+    label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    self.statusLabel = label;
+
+    UIStackView *inner = [[UIStackView alloc] initWithArrangedSubviews:@[dot, label]];
+    inner.axis = UILayoutConstraintAxisHorizontal;
+    inner.spacing = 6;
+    inner.alignment = UIStackViewAlignmentCenter;
+    inner.translatesAutoresizingMaskIntoConstraints = NO;
+    [chip addSubview:inner];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [dot.widthAnchor constraintEqualToConstant:6],
+        [dot.heightAnchor constraintEqualToConstant:6],
+        [inner.topAnchor constraintEqualToAnchor:chip.topAnchor constant:4.5],
+        [inner.bottomAnchor constraintEqualToAnchor:chip.bottomAnchor constant:-4.5],
+        [inner.leadingAnchor constraintEqualToAnchor:chip.leadingAnchor constant:9],
+        [inner.trailingAnchor constraintEqualToAnchor:chip.trailingAnchor constant:-11]
+    ]];
+
+    UIView *row = [UIView new];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [row addSubview:chip];
+    [NSLayoutConstraint activateConstraints:@[
+        [chip.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [chip.topAnchor constraintEqualToAnchor:row.topAnchor],
+        [chip.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
+        [chip.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]
+    ]];
+    return row;
+}
+
+- (UILabel *)fieldValueLabel {
+    UILabel *label = [UILabel new];
+    label.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightRegular];
+    label.textColor = UIColor.labelColor;
+    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    label.userInteractionEnabled = YES;
     return label;
 }
 
-- (void)sizeHeader {
-    UIView *header = self.tableView.tableHeaderView;
-    if (!header) return;
-    CGFloat width = CGRectGetWidth(self.tableView.bounds);
-    if (width <= 0 || fabs(CGRectGetWidth(header.frame) - width) < 0.5) return;
-    header.frame = CGRectMake(0, 0, width, CGRectGetHeight(header.frame));
-    [header setNeedsLayout];
-    [header layoutIfNeeded];
-    CGSize size = [header systemLayoutSizeFittingSize:CGSizeMake(width, UILayoutFittingCompressedSize.height)
-                            withHorizontalFittingPriority:UILayoutPriorityRequired
-                                  verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    header.frame = CGRectMake(0, 0, width, size.height);
-    self.tableView.tableHeaderView = header;
+- (UIView *)buildFields {
+    UIView *box = [UIView new];
+    box.translatesAutoresizingMaskIntoConstraints = NO;
+    box.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.06];
+    box.layer.cornerRadius = 15;
+    box.layer.cornerCurve = kCACornerCurveContinuous;
+    box.clipsToBounds = YES;
+
+    self.endpointLabel = [self fieldValueLabel];
+    self.tokenLabel = [self fieldValueLabel];
+
+    UIView *endpoint = [self fieldRowSymbol:@"link"
+                                    caption:@"访问地址"
+                                      value:self.endpointLabel
+                                     button:@"pencil"
+                                     action:@selector(editEndpoint)];
+    UIView *token = [self fieldRowSymbol:@"key.horizontal.fill"
+                                 caption:@"访问令牌"
+                                   value:self.tokenLabel
+                                  button:@"square.on.square"
+                                  action:@selector(copyToken)];
+
+    UIStackView *rows = [[UIStackView alloc] initWithArrangedSubviews:@[endpoint, [self separatorView], token]];
+    rows.axis = UILayoutConstraintAxisVertical;
+    rows.spacing = 0;
+    rows.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:rows];
+    [NSLayoutConstraint activateConstraints:@[
+        [rows.topAnchor constraintEqualToAnchor:box.topAnchor constant:2],
+        [rows.leadingAnchor constraintEqualToAnchor:box.leadingAnchor],
+        [rows.trailingAnchor constraintEqualToAnchor:box.trailingAnchor],
+        [rows.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-2]
+    ]];
+    return box;
 }
+
+- (UIView *)fieldRowSymbol:(NSString *)symbol
+                   caption:(NSString *)caption
+                     value:(UILabel *)value
+                    button:(NSString *)buttonSymbol
+                    action:(SEL)action {
+    UIView *row = [UIView new];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]]];
+    icon.tintColor = UIColor.secondaryLabelColor;
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [row addSubview:icon];
+
+    UILabel *cap = [UILabel new];
+    cap.text = caption;
+    cap.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightSemibold];
+    cap.textColor = UIColor.tertiaryLabelColor;
+
+    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[cap, value]];
+    texts.axis = UILayoutConstraintAxisVertical;
+    texts.spacing = 2;
+    texts.translatesAutoresizingMaskIntoConstraints = NO;
+    [row addSubview:texts];
+    [texts addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:action]];
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button setImage:[UIImage systemImageNamed:buttonSymbol
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold]]
+            forState:UIControlStateNormal];
+    button.tintColor = UIColor.secondaryLabelColor;
+    button.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.07];
+    button.layer.cornerRadius = 9;
+    button.layer.cornerCurve = kCACornerCurveContinuous;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [row addSubview:button];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:12],
+        [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:16],
+        [icon.heightAnchor constraintEqualToConstant:16],
+        [texts.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:10],
+        [texts.trailingAnchor constraintEqualToAnchor:button.leadingAnchor constant:-10],
+        [texts.topAnchor constraintEqualToAnchor:row.topAnchor constant:9],
+        [texts.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-9],
+        [button.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-10],
+        [button.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [button.widthAnchor constraintEqualToConstant:30],
+        [button.heightAnchor constraintEqualToConstant:30]
+    ]];
+    return row;
+}
+
+#pragma mark - Cards
+
+- (AXRowView *)rowTitle:(NSString *)title
+               subtitle:(NSString *)subtitle
+                 symbol:(NSString *)symbol
+                   tint:(UIColor *)tint {
+    AXRowView *row = [[AXRowView alloc] initWithFrame:CGRectZero];
+    row.titleLabel.text = title;
+    if (subtitle.length) {
+        row.subtitleLabel.text = subtitle;
+        row.subtitleLabel.hidden = NO;
+    }
+    [row setSymbol:symbol tint:tint];
+    return row;
+}
+
+- (AXGlassCard *)buildContextCard {
+    __weak typeof(self) weakSelf = self;
+    AXRowView *object = [self rowTitle:@"当前对象" subtitle:nil symbol:@"scope" tint:UIColor.systemBlueColor];
+    object.userInteractionEnabled = NO;
+    self.contextObjectRow = object;
+
+    AXRowView *report = [self rowTitle:@"现场报告" subtitle:@"暂无" symbol:@"doc.text.magnifyingglass"
+                                  tint:UIColor.systemIndigoColor];
+    report.userInteractionEnabled = NO;
+    report.subtitleLabel.numberOfLines = 2;
+    self.contextReportRow = report;
+
+    AXRowView *copy = [self rowTitle:@"复制现场报告" subtitle:nil symbol:@"doc.on.doc" tint:UIColor.systemBlueColor];
+    [copy setShowsChevron:YES];
+    copy.onTap = ^{ [weakSelf copyText:weakSelf.report message:@"已复制现场报告"]; };
+
+    return [self cardWithRows:@[object, report, copy] radius:22];
+}
+
+- (AXGlassCard *)buildActionsCard {
+    __weak typeof(self) weakSelf = self;
+
+    AXRowView *config = [self rowTitle:@"复制 MCP 客户端配置" subtitle:nil
+                                symbol:@"square.on.square" tint:UIColor.systemBlueColor];
+    [config setShowsChevron:YES];
+    config.onTap = ^{ [weakSelf copyClientConfiguration]; };
+
+    AXRowView *enable = [self rowTitle:@"一键开启常用工具组" subtitle:nil
+                                symbol:@"bolt.fill" tint:UIColor.systemOrangeColor];
+    [enable setShowsChevron:YES];
+    enable.onTap = ^{ [weakSelf enableAllGroupsTapped]; };
+
+    AXRowView *settings = [self rowTitle:@"服务设置" subtitle:nil
+                                  symbol:@"slider.horizontal.3" tint:UIColor.systemGrayColor];
+    [settings setShowsChevron:YES];
+    settings.onTap = ^{ [weakSelf openSettings]; };
+
+    AXRowView *restart = [self rowTitle:@"重启 MCP 服务" subtitle:nil
+                                 symbol:@"arrow.triangle.2.circlepath" tint:UIColor.systemGreenColor];
+    [restart setShowsChevron:YES];
+    restart.onTap = ^{ [weakSelf restartService]; };
+    self.restartRow = restart;
+
+    AXRowView *collapse = [self rowTitle:@"收起面板（回到 App）" subtitle:nil
+                                  symbol:@"chevron.down.circle" tint:UIColor.systemBlueColor];
+    collapse.titleLabel.textColor = UIColor.systemBlueColor;
+    [collapse setShowsChevron:YES];
+    collapse.onTap = ^{ [weakSelf collapseTapped]; };
+
+    return [self cardWithRows:@[config, enable, settings, restart, collapse] radius:22];
+}
+
+- (UIView *)buildPermissionCard {
+    __weak typeof(self) weakSelf = self;
+    NSArray *titles = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
+    NSArray *details = @[
+        @"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接",
+        @"头文件、日志/网络正文、文件搜索、截图、Keychain 元数据",
+        @"点击、输入、滚动、手势、方法调用与高亮，会改变 App 状态",
+        @"在 WKWebView 执行 JavaScript，可能改变网页状态",
+        @"替换方法实现并记录调用，高风险，10 分钟自动停止"
+    ];
+    NSArray *symbols = @[@"lock.shield.fill", @"eye.fill", @"hand.tap.fill", @"curlybraces", @"waveform.path.ecg"];
+    NSArray *tints = @[UIColor.systemGreenColor, UIColor.systemBlueColor, UIColor.systemIndigoColor,
+                       UIColor.systemOrangeColor, UIColor.systemRedColor];
+
+    NSMutableArray *rows = [NSMutableArray new];
+    NSMutableArray *switches = [NSMutableArray new];
+    for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
+        AXRowView *row = [self rowTitle:titles[index] subtitle:details[index]
+                                 symbol:symbols[index] tint:tints[index]];
+        [row setShowsSwitch:YES];
+        row.onToggle = ^(BOOL on) { [weakSelf permissionChanged:index on:on]; };
+        [rows addObject:row];
+        [switches addObject:row.toggle];
+    }
+    self.permissionSwitches = switches;
+
+    AXGlassCard *card = [self cardWithRows:rows radius:22];
+
+    self.permissionFootnote = [self footnoteLabel:@""];
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[card, self.permissionFootnote]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 8;
+    stack.alignment = UIStackViewAlignmentFill;
+    return stack;
+}
+
+- (UIView *)buildUsageCard {
+    AXRowView *row = [self rowTitle:@"MCP 客户端"
+                           subtitle:@"在 Claude Desktop、Cursor、Cherry Studio 等客户端添加 Streamable HTTP 服务，URL 填上方访问地址；需要授权时在请求头加 Authorization: Bearer <访问令牌>。"
+                             symbol:@"desktopcomputer" tint:UIColor.systemGrayColor];
+    row.subtitleLabel.numberOfLines = 0;
+    row.userInteractionEnabled = NO;
+    return [self cardWithRows:@[row] radius:22];
+}
+
+- (AXGlassCard *)buildToolsCard {
+    NSArray *items = [self toolItems];
+    NSMutableArray *rows = [NSMutableArray new];
+    NSMutableArray *views = [NSMutableArray new];
+    for (NSDictionary *item in items) {
+        AXRowView *row = [self rowTitle:item[@"name"] subtitle:item[@"detail"]
+                                 symbol:@"checkmark.seal.fill" tint:UIColor.systemGreenColor];
+        row.titleLabel.font = [UIFont monospacedSystemFontOfSize:13.5 weight:UIFontWeightSemibold];
+        row.subtitleLabel.numberOfLines = 2;
+        row.userInteractionEnabled = NO;
+        [rows addObject:row];
+        [views addObject:row];
+    }
+    self.toolRowViews = rows;
+    return [self cardWithRows:views radius:22];
+}
+
+#pragma mark - Refresh
 
 - (void)refresh {
     BOOL enabled = [FLEXAiFlexMCPServer isEnabled];
     NSString *state = [FLEXAiFlexMCPServer status];
-    self.statusPill.text = state;
-    if ([state isEqualToString:@"运行中"]) {
-        self.statusPill.textColor = UIColor.systemGreenColor;
-        self.statusPill.backgroundColor = [UIColor.systemGreenColor colorWithAlphaComponent:0.14];
-    } else if (!enabled) {
-        self.statusPill.textColor = UIColor.secondaryLabelColor;
-        self.statusPill.backgroundColor = [UIColor.systemGrayColor colorWithAlphaComponent:0.16];
-    } else {
-        self.statusPill.textColor = UIColor.systemOrangeColor;
-        self.statusPill.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.14];
-    }
+    UIColor *tint = [state isEqualToString:@"运行中"]
+        ? UIColor.systemGreenColor
+        : (enabled ? UIColor.systemOrangeColor : UIColor.systemGrayColor);
+    self.statusLabel.text = state;
+    self.statusLabel.textColor = tint;
+    self.statusDot.backgroundColor = tint;
+    self.statusChip.backgroundColor = [tint colorWithAlphaComponent:0.16];
+
     self.endpointLabel.text = [FLEXAiFlexMCPServer endpoint];
     if ([FLEXAiFlexMCPServer authRequired]) {
         NSString *token = [FLEXAiFlexMCPServer token];
@@ -285,7 +841,40 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
         self.tokenLabel.text = @"未启用（仅限可信局域网）";
     }
     self.heroSubtitle.text = [NSString stringWithFormat:@"FLEX++ 运行时 · %@", self.className];
-    [self.tableView reloadData];
+
+    self.contextObjectRow.valueLabel.text = self.className;
+    self.contextObjectRow.valueLabel.hidden = self.className.length == 0;
+    NSString *summary = [self reportSummary];
+    self.contextReportRow.subtitleLabel.text = summary.length ? summary : @"暂无";
+    self.restartRow.titleLabel.text = enabled ? @"重启 MCP 服务" : @"开启 MCP 服务";
+
+    NSArray<NSNumber *> *states = @[
+        @([FLEXAiFlexMCPServer authRequired]),
+        @([FLEXAiFlexMCPServer sensitiveEnabled]),
+        @([FLEXAiFlexMCPServer controlEnabled]),
+        @([FLEXAiFlexMCPServer scriptEnabled]),
+        @([FLEXAiFlexMCPServer tracingEnabled])
+    ];
+    NSArray *names = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
+    NSMutableArray *summaryParts = [NSMutableArray new];
+    for (NSUInteger index = 0; index < self.permissionSwitches.count && index < states.count; index++) {
+        self.permissionSwitches[index].on = states[index].boolValue;
+        [summaryParts addObject:[NSString stringWithFormat:@"%@ %@", names[index],
+            states[index].boolValue ? @"开" : @"关"]];
+    }
+    self.permissionFootnote.text = [NSString stringWithFormat:
+        @"当前状态：%@\n\n关闭授权保护后同局域网可直接连接，请仅在可信网络使用；界面控制会真实改变 App 状态；方法追踪可能导致崩溃或卡顿，默认关闭。",
+        [summaryParts componentsJoinedByString:@" · "]];
+
+    NSArray *items = [self toolItems];
+    for (NSUInteger index = 0; index < self.toolRowViews.count && index < items.count; index++) {
+        BOOL on = [items[index][@"enabled"] boolValue];
+        AXRowView *row = self.toolRowViews[index];
+        row.titleLabel.textColor = on ? UIColor.labelColor : UIColor.secondaryLabelColor;
+        [row setSymbol:on ? @"checkmark.seal.fill" : @"circle.dashed"
+                 tint:on ? UIColor.systemGreenColor : UIColor.tertiaryLabelColor];
+    }
+
     [self.refreshControl endRefreshing];
 }
 
@@ -304,165 +893,7 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     if (self.isViewLoaded) [self refresh];
 }
 
-#pragma mark - Table data
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return AXSectionCount; }
-
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    switch (section) {
-        case AXSectionContext: return @"当前现场";
-        case AXSectionActions: return @"快捷操作";
-        case AXSectionPermissions: return @"授权";
-        case AXSectionTools: return @"可用工具";
-        default: return @"使用方式";
-    }
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == AXSectionPermissions) {
-        NSString *(^state)(BOOL) = ^NSString *(BOOL on){ return on ? @"开" : @"关"; };
-        NSString *summary = [NSString stringWithFormat:@"当前状态：授权保护 %@ · 敏感读取 %@ · 界面控制 %@ · 脚本执行 %@ · 方法追踪 %@",
-            state([FLEXAiFlexMCPServer authRequired]), state([FLEXAiFlexMCPServer sensitiveEnabled]),
-            state([FLEXAiFlexMCPServer controlEnabled]), state([FLEXAiFlexMCPServer scriptEnabled]),
-            state([FLEXAiFlexMCPServer tracingEnabled])];
-        return [NSString stringWithFormat:@"%@\n\n授权保护：开启后必须携带 Bearer 令牌；关闭后同局域网可直接连接，请仅在可信网络使用。\n敏感读取：允许头文件、日志/网络正文、文件搜索、截图与 Keychain 元数据。\n界面控制：允许点击、输入、滚动、手势和高亮；会真实改变 App 状态。\n脚本执行：允许在 WKWebView 中运行 JavaScript，只影响网页，但可能破坏页面状态。\n方法追踪：运行期替换指定方法并记录调用，可能导致崩溃或卡顿，默认关闭。", summary];
-    }
-    if (section == AXSectionTools) {
-        return @"工具组关闭后，对应工具不会出现在 MCP tools/list 中。";
-    }
-    return nil;
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    switch (section) {
-        case AXSectionContext: return 3;
-        case AXSectionActions: return 5;
-        case AXSectionPermissions: return 5;
-        case AXSectionTools: return [self toolRows].count;
-        default: return 1;
-    }
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == AXSectionTools || indexPath.section == AXSectionUsage) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"subtitle"];
-        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"subtitle"];
-        cell.accessoryView = nil;
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-        cell.detailTextLabel.numberOfLines = 0;
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-        cell.textLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-        if (indexPath.section == AXSectionUsage) {
-            cell.imageView.image = nil;
-            cell.textLabel.text = @"MCP 客户端";
-            cell.textLabel.font = [UIFont systemFontOfSize:15];
-            cell.textLabel.textColor = UIColor.labelColor;
-            cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-            cell.detailTextLabel.text = @"在 Claude Desktop、Cursor、Cherry Studio 等客户端添加 Streamable HTTP 服务，URL 填上方访问地址；需要授权时在请求头加 Authorization: Bearer <访问令牌>。";
-            return cell;
-        }
-        NSArray *tools = [self toolRows];
-        NSDictionary *tool = tools[indexPath.row];
-        cell.textLabel.text = tool[@"name"];
-        cell.textLabel.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightSemibold];
-        cell.detailTextLabel.text = tool[@"detail"];
-        BOOL enabled = [tool[@"enabled"] boolValue];
-        cell.textLabel.textColor = enabled ? UIColor.labelColor : UIColor.secondaryLabelColor;
-        cell.detailTextLabel.textColor = enabled ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
-        cell.imageView.image = [UIImage systemImageNamed:enabled ? @"checkmark.circle.fill" : @"circle"];
-        cell.imageView.tintColor = enabled ? UIColor.systemGreenColor : UIColor.tertiaryLabelColor;
-        return cell;
-    }
-
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"value"];
-    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"value"];
-    cell.accessoryView = nil;
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.textLabel.font = [UIFont systemFontOfSize:16];
-    cell.textLabel.textColor = UIColor.labelColor;
-    cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-    cell.detailTextLabel.numberOfLines = 1;
-
-    if (indexPath.section == AXSectionContext) {
-        if (indexPath.row == 0) {
-            cell.textLabel.text = @"当前对象";
-            cell.detailTextLabel.text = self.className;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"现场报告";
-            NSString *summary = [self reportSummary];
-            cell.detailTextLabel.text = summary.length ? AXShortText(summary, 80) : @"暂无";
-            cell.detailTextLabel.numberOfLines = 2;
-            cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else {
-            cell.textLabel.text = @"复制现场报告";
-            cell.detailTextLabel.text = @"";
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        }
-        return cell;
-    }
-
-    if (indexPath.section == AXSectionActions) {
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        NSArray *icons = @[@"doc.on.doc", @"bolt.fill", @"gearshape", @"arrow.triangle.2.circlepath", @"chevron.down"];
-        NSArray *labels = @[@"复制 MCP 客户端配置", @"一键开启常用工具组", @"服务设置",
-            [FLEXAiFlexMCPServer isEnabled] ? @"重启 MCP 服务" : @"开启 MCP 服务", @"收起面板（回到 App）"];
-        cell.imageView.image = [UIImage systemImageNamed:icons[indexPath.row]];
-        cell.imageView.tintColor = indexPath.row == 1 ? UIColor.systemOrangeColor : UIColor.systemBlueColor;
-        cell.textLabel.text = labels[indexPath.row];
-        cell.textLabel.textColor = indexPath.row == 4 ? UIColor.systemBlueColor : UIColor.labelColor;
-        return cell;
-    }
-
-    // Permissions
-    if (indexPath.section == AXSectionPermissions) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"permission"];
-        if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"permission"];
-        }
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.textLabel.textColor = UIColor.labelColor;
-        cell.textLabel.font = [UIFont systemFontOfSize:16];
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
-        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-        cell.detailTextLabel.numberOfLines = 0;
-        NSArray *titles = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
-        NSArray *details = @[
-            @"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接",
-            @"头文件、日志/网络正文、文件搜索、截图、Keychain 元数据",
-            @"点击、输入、滚动、手势、方法调用与高亮，会改变 App 状态",
-            @"在 WKWebView 执行 JavaScript，可能改变网页状态",
-            @"替换方法实现并记录调用，高风险，10 分钟自动停止"
-        ];
-        cell.textLabel.text = titles[indexPath.row];
-        cell.detailTextLabel.text = details[indexPath.row];
-        UISwitch *toggle = [UISwitch new];
-        toggle.tag = 900 + indexPath.row;
-        if (indexPath.row == 0) toggle.on = [FLEXAiFlexMCPServer authRequired];
-        else if (indexPath.row == 1) toggle.on = [FLEXAiFlexMCPServer sensitiveEnabled];
-        else if (indexPath.row == 2) toggle.on = [FLEXAiFlexMCPServer controlEnabled];
-        else if (indexPath.row == 3) toggle.on = [FLEXAiFlexMCPServer scriptEnabled];
-        else toggle.on = [FLEXAiFlexMCPServer tracingEnabled];
-        if (indexPath.row == 0 && ![FLEXAiFlexMCPServer isEnabled]) {
-            cell.textLabel.textColor = UIColor.secondaryLabelColor;
-        } else if (indexPath.row >= 3 && toggle.on) {
-            cell.textLabel.textColor = UIColor.systemOrangeColor;
-        }
-        [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = toggle;
-        return cell;
-    }
-
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    return cell;
-}
-
-- (NSArray<NSDictionary *> *)toolRows {
+- (NSArray<NSDictionary *> *)toolItems {
     return @[
         @{@"name": @"aiflex_status", @"detail": @"读取注入 App、端点与工具组状态", @"enabled": @YES},
         @{@"name": @"aiflex_read", @"detail": @"元素/文字查找、对象属性、实例、网络搜索与快照（免授权）", @"enabled": @YES},
@@ -487,52 +918,26 @@ static NSString *AXShortText(NSString *text, NSUInteger limit) {
     return [lines componentsJoinedByString:@"\n"];
 }
 
-#pragma mark - Table delegate
+#pragma mark - Actions
 
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == AXSectionUsage) return 120;
-    if (indexPath.section == AXSectionPermissions) return 70;
-    if (indexPath.section == AXSectionTools) return 62;
-    if (indexPath.section == AXSectionContext && indexPath.row == 1) return 76;
-    return 48;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == AXSectionContext && indexPath.row == 2) {
-        [self copyText:self.report message:@"已复制现场报告"];
-        return;
-    }
-    if (indexPath.section == AXSectionActions) {
-        if (indexPath.row == 0) [self copyClientConfiguration];
-        else if (indexPath.row == 1) [self enableAllGroupsTapped];
-        else if (indexPath.row == 2) [self openSettings];
-        else if (indexPath.row == 3) [self restartService];
-        else [self collapseTapped];
-    }
-}
-
-- (void)toggleChanged:(UISwitch *)sender {
-    NSInteger row = sender.tag - 900;
+- (void)permissionChanged:(NSInteger)row on:(BOOL)on {
     if (row == 0) {
-        [FLEXAiFlexMCPServer setAuthRequired:sender.on];
+        [FLEXAiFlexMCPServer setAuthRequired:on];
         if ([FLEXAiFlexMCPServer isEnabled]) {
             [[FLEXAiFlexMCPServer shared] stop];
             [[FLEXAiFlexMCPServer shared] start];
         }
     } else if (row == 1) {
-        [FLEXAiFlexMCPServer setSensitiveEnabled:sender.on];
+        [FLEXAiFlexMCPServer setSensitiveEnabled:on];
     } else if (row == 2) {
-        [FLEXAiFlexMCPServer setControlEnabled:sender.on];
+        [FLEXAiFlexMCPServer setControlEnabled:on];
     } else if (row == 3) {
-        [FLEXAiFlexMCPServer setScriptEnabled:sender.on];
+        [FLEXAiFlexMCPServer setScriptEnabled:on];
     } else if (row == 4) {
-        [FLEXAiFlexMCPServer setTracingEnabled:sender.on];
+        [FLEXAiFlexMCPServer setTracingEnabled:on];
     }
     [self refresh];
 }
-
-#pragma mark - Actions
 
 - (void)enableAllGroupsTapped {
     BOOL allOn = [FLEXAiFlexMCPServer sensitiveEnabled] && [FLEXAiFlexMCPServer controlEnabled];
