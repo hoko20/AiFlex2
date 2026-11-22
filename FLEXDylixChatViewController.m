@@ -9,6 +9,7 @@
 #import "FLEXManager+Private.h"
 #import "FLEXUtility.h"
 #import <arpa/inet.h>
+#import <ifaddrs.h>
 #import <math.h>
 #import <sys/socket.h>
 #import <sys/time.h>
@@ -16,6 +17,27 @@
 
 typedef void (^DXChatReply)(NSDictionary *data, NSError *error);
 static NSError *DXChatError(NSString *message) { return [NSError errorWithDomain:@"FLEX.AiFlex2" code:1 userInfo:@{NSLocalizedDescriptionKey:message?:@"连接失败"}]; }
+// 与 AiFlex2 App 的默认值对齐：App 默认在 Wi-Fi 局域网模式监听 8787，插件与它同机时，
+// 本机 Wi-Fi 地址就是 App 的监听地址，所以这里取宿主自己的 en0 IPv4 做默认地址。
+static NSString *FLEXDylixLocalIPv4(void) {
+    struct ifaddrs *interfaces = NULL;
+    NSString *fallback = nil;
+    if (getifaddrs(&interfaces) != 0) return @"127.0.0.1";
+    for (struct ifaddrs *cursor = interfaces; cursor; cursor = cursor->ifa_next) {
+        if (!cursor->ifa_addr || cursor->ifa_addr->sa_family != AF_INET) continue;
+        if (cursor->ifa_flags & IFF_LOOPBACK) continue;
+        NSString *name = cursor->ifa_name ? [NSString stringWithUTF8String:cursor->ifa_name] : @"";
+        char buffer[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &((struct sockaddr_in *)cursor->ifa_addr)->sin_addr,
+                  buffer, sizeof(buffer));
+        NSString *address = [NSString stringWithUTF8String:buffer];
+        if (!address.length || [address hasPrefix:@"169.254."]) continue;
+        if ([name hasPrefix:@"en"]) { fallback = address; break; }
+        if (!fallback) fallback = address;
+    }
+    freeifaddrs(interfaces);
+    return fallback ?: @"127.0.0.1";
+}
 static NSDictionary *DXRememberedChat;
 static __weak FLEXDylixChatViewController *DXCurrentChat;
 static NSString *DXChatContent(id content) {
@@ -826,7 +848,9 @@ static NSString *DXChatContent(id content) {
  });
 }
 - (void)connectTapped {
- NSString *address=self.host.length&&self.port?[NSString stringWithFormat:@"http://%@:%lu",self.host,(unsigned long)self.port]:@"http://127.0.0.1:8787";
+ NSString *address=self.host.length&&self.port
+        ? [NSString stringWithFormat:@"http://%@:%lu",self.host,(unsigned long)self.port]
+        : [NSString stringWithFormat:@"http://%@:%lu",FLEXDylixLocalIPv4(),(unsigned long)8787];
  NSMutableArray<AXAlertButton *> *actions=[NSMutableArray new];
  if(self.lastConnectionError.userInfo[FLEXDylixConnectionDiagnosticKey])[actions addObject:[AXAlertButton buttonWithTitle:@"上次连接诊断" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){[self showConnectionDiagnostic];}]];
  if(self.token.length)[actions addObject:[AXAlertButton buttonWithTitle:@"使用已保存连接" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){self.needsConnectionValidation=YES;self.lastValidateFailure=0;[self resumeSavedConnection];}]];
@@ -844,7 +868,7 @@ static NSString *DXChatContent(id content) {
   NSString *name=[NSString stringWithFormat:@"FLEX · %@",NSBundle.mainBundle.bundleIdentifier?:@"目标 App"];if(name.length>64)name=[name substringToIndex:64];[self setStatus:@"正在配对…"];
   [self request:@"/api/v1/pair" body:@{@"code":code,@"name":name,@"workspace":@YES} completion:^(NSDictionary *data,NSError *error){if(error){[self showConnectionState:3];[self showError:error];return;}[self request:@"/api/v1/status" body:@{} completion:^(NSDictionary *status,NSError *failure){if(failure){[self showConnectionState:3];[self showError:failure];return;}self.csrf=status[@"session"][@"csrf"];if(!self.csrf.length){[self showConnectionState:3];[self showError:DXChatError(@"配对后未取得请求校验值")];return;}[self showConnectionState:2];[self setStatus:@"配对完成"];[self startAgentPolling];if(self.projectID.length)[self restoreSavedWorkspace];else [self projectTapped];}];}];
  }]];
- AXPresentForm(self,@"连接 AiFlex2",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网连接」打开「HTTP 服务」。\n插件与 App 在同一台设备时，把 App 里「连接方式」选为「仅本机」，地址填 http://127.0.0.1:8787；跨设备才填 App 显示的局域网地址。授权码在 App 页面的「访问与配对」里。",@[
+ AXPresentForm(self,@"连接 AiFlex2",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网连接」打开「HTTP 服务」。\n默认地址是本机 Wi-Fi 地址加 8787 端口，与 App 的默认设置一致，直接连接即可。若 App 里把连接方式切成了「仅本机」，把地址改成 http://127.0.0.1:8787。授权码在 App 页面的「访问与配对」里。",@[
   [AXAlertField fieldWithPlaceholder:@"粘贴 AiFlex2 复制的访问地址" text:address kind:AXAlertFieldKindURL],
   [AXAlertField fieldWithPlaceholder:@"授权码" text:self.authorizationCode kind:AXAlertFieldKindSecure]
  ],actions);
