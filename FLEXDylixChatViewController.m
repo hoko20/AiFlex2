@@ -259,6 +259,10 @@ static NSString *DXChatContent(id content) {
  self.statusLabel.text=self.csrf.length?@"正在检查连接":@"未连接";
  self.statusLabel.lineBreakMode=NSLineBreakByTruncatingTail;
  [self.statusLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+ // 文案里一直写着“点击重连”，那就真的让它能点：中断后不用再去找齿轮。
+ self.statusLabel.userInteractionEnabled=YES;
+ self.statusLabel.accessibilityTraits=UIAccessibilityTraitButton;
+ [self.statusLabel addGestureRecognizer:[[UITapGestureRecognizer alloc]initWithTarget:self action:@selector(statusTapped)]];
 
  self.statusDot=[UIView new];
  self.statusDot.backgroundColor=UIColor.systemGrayColor;
@@ -402,6 +406,11 @@ static NSString *DXChatContent(id content) {
  self.connectButton.accessibilityLabel=state==0?@"连接 AiFlex2":@"连接设置";
  if (@available(iOS 13.0, *)) {} else [self.connectButton setTitle:@"连" forState:UIControlStateNormal];
  [self refreshAgentStatus];
+}
+- (void)statusTapped {
+ if(self.connectionState==2){[self setStatus:@"连接正常"];return;}
+ if(self.token.length){self.needsConnectionValidation=YES;self.lastValidateFailure=0;[self resumeSavedConnection];return;}
+ [self connectTapped];
 }
 - (void)updateSessionButton {NSString *name=self.sessionTitle.length?self.sessionTitle:@"新会话";[self.sessionButton setTitle:[NSString stringWithFormat:@"会话 · %@  ▾",name] forState:UIControlStateNormal];}
 - (void)showConnectionDiagnostic {
@@ -668,8 +677,20 @@ static NSString *DXChatContent(id content) {
  self.agentPolling=YES;NSUInteger generation=self.sessionLoadGeneration;
  [self request:@"/api/v1/flex/next" body:@{} completion:^(NSDictionary *command,NSError *error){
   self.agentPolling=NO;if(generation!=self.sessionLoadGeneration||!self.csrf.length||self.needsConnectionValidation)return;
-  if(error){self.lastConnectionError=error;self.missedHeartbeats++;if(self.missedHeartbeats>=2){[self showConnectionState:3];[self setStatus:@"连接中断 · 连接设置可查看诊断，正在重试"]; }[self nextPollIn:self.missedHeartbeats>=2?3.0:1.5];return;}
+  if(error){
+   self.lastConnectionError=error;self.missedHeartbeats++;
+   // 连续两次失败多半只是 App 刚切到后台、系统还没恢复监听，先别急着报中断。
+   if(self.missedHeartbeats>=3){
+    NSString *reason=[[error.localizedDescription componentsSeparatedByString:@"\n"] firstObject];
+    [self showConnectionState:3];
+    [self setStatus:reason.length?[NSString stringWithFormat:@"%@ · 正在重试",reason]:@"连接中断 · 正在重试"];
+   }
+   [self nextPollIn:self.missedHeartbeats>=3?3.0:1.5];return;
+  }
+  BOOL recovered=self.connectionState==3;
   self.missedHeartbeats=0;[self showConnectionState:2];
+  // 恢复后必须把上一次的红色错误文案换掉，否则会一直挂着“连接中断”。
+  if(recovered)[self setStatus:@"连接已恢复"];
   if(![command[@"id"] isKindOfClass:NSString.class]){if(self.pendingCommandID&&self.agentReplies[self.pendingCommandID]){[self.agentReplies removeObjectForKey:self.pendingCommandID];self.pendingCommandID=nil;}[self nextPollIn:(self.busy||self.activeToolOperations.count)?0.5:1.8];return;}
   NSString *identifier=command[@"id"];NSDictionary *reply=self.agentReplies[identifier];
   if(reply){[self sendAgentReply:reply];[self nextPollIn:0.4];return;}
@@ -869,7 +890,7 @@ static NSString *DXChatContent(id content) {
   NSString *name=[NSString stringWithFormat:@"FLEX · %@",NSBundle.mainBundle.bundleIdentifier?:@"目标 App"];if(name.length>64)name=[name substringToIndex:64];[self setStatus:@"正在配对…"];
   [self request:@"/api/v1/pair" body:@{@"code":code,@"name":name,@"workspace":@YES} completion:^(NSDictionary *data,NSError *error){if(error){[self showConnectionState:3];[self showError:error];return;}[self request:@"/api/v1/status" body:@{} completion:^(NSDictionary *status,NSError *failure){if(failure){[self showConnectionState:3];[self showError:failure];return;}self.csrf=status[@"session"][@"csrf"];if(!self.csrf.length){[self showConnectionState:3];[self showError:DXChatError(@"配对后未取得请求校验值")];return;}[self showConnectionState:2];[self setStatus:@"配对完成"];[self startAgentPolling];if(self.projectID.length)[self restoreSavedWorkspace];else [self projectTapped];}];}];
  }]];
- AXPresentForm(self,@"连接 AiFlex2",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网连接」打开「HTTP 服务」。\n默认地址是本机 Wi-Fi 地址加 8787 端口，与 App 的默认设置一致，直接连接即可。若 App 里把连接方式切成了「仅本机」，把地址改成 http://127.0.0.1:8787。授权码在 App 页面的「访问与配对」里。",@[
+ AXPresentForm(self,@"连接 AiFlex2",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网连接」打开「HTTP 服务」。\n默认地址是本机 Wi-Fi 地址加 8787 端口，与 App 的默认设置一致，直接连接即可。若 App 里把连接方式切成了「仅本机」，把地址改成 http://127.0.0.1:8787。授权码在 App 页面的「访问与配对」里。\n要在插件里长时间用，请到 App 的「局域网连接 → 后台保持服务」打开开关，否则 App 切后台约 30 秒后服务会暂停。",@[
   [AXAlertField fieldWithPlaceholder:@"粘贴 AiFlex2 复制的访问地址" text:address kind:AXAlertFieldKindURL],
   [AXAlertField fieldWithPlaceholder:@"授权码" text:self.authorizationCode kind:AXAlertFieldKindSecure]
  ],actions);
@@ -880,9 +901,10 @@ static NSString *DXChatContent(id content) {
  [self workspace:@"projects" arguments:@{} completion:^(NSDictionary *data,NSError *error){
   if(error){[self showError:error];return;}
   NSArray *projects=[data[@"projects"] isKindOfClass:NSArray.class]?data[@"projects"]:@[];
+  if(!projects.count){[self showError:DXChatError(@"AiFlex2 里还没有项目。请先在 App 里新建项目，再回来选择")];return;}
   NSMutableArray<AXSheetItem *> *items=[NSMutableArray new];
   for(id raw in projects){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *name=raw[@"name"]?:raw[@"id"];if(![name isKindOfClass:NSString.class]||!name.length)continue;AXSheetItem *item=[AXSheetItem itemWithTitle:name subtitle:nil];item.selected=[self.projectID isEqual:raw[@"id"]];[items addObject:item];}
-  AXPresentSheet(self,@"选择 AiFlex2 项目",@"AI 的文件和构建权限仍限定在所选项目",items,^(NSInteger index){
+  AXPresentSheet(self,@"选择 AiFlex2 项目",@"AI 的文件和构建权限限定在所选项目；选完会接着让你选模型",items,^(NSInteger index){
    if(index<0||index>=(NSInteger)items.count)return;
    NSDictionary *project=nil;NSUInteger position=0;
    for(id raw in projects){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *name=raw[@"name"]?:raw[@"id"];if(![name isKindOfClass:NSString.class]||!name.length)continue;if(position==(NSUInteger)index){project=raw;break;}position++;}
@@ -916,12 +938,17 @@ static NSString *DXChatContent(id content) {
 }
 - (void)modelTapped {if(self.restoringWorkspace){[self setStatus:@"正在恢复上次项目和会话，请稍候"];return;}
  if(self.busy){[self setStatus:@"AI 正在回复，结束后可切换模型"];return;}
- if(!self.projectID.length){[self projectTapped];return;}
+ if(!self.csrf.length){[self connectTapped];return;}
+ if(!self.projectID.length){
+  // 模型是按项目授权的，没有项目时列表必然是空的。先说明原因，再进项目列表，选完自动接模型列表。
+  [self setStatus:@"模型按项目授权，请先选择项目"];
+  [self projectTapped];return;}
  NSString *project=self.projectID;NSUInteger generation=++self.sessionLoadGeneration;
  [self workspace:@"ai_connections" arguments:@{} completion:^(NSDictionary *data,NSError *error){
   if(generation!=self.sessionLoadGeneration||![project isEqual:self.projectID]||self.busy)return;
   if(error){[self showError:error];return;}
   NSArray *connections=[data[@"connections"] isKindOfClass:NSArray.class]?data[@"connections"]:@[];
+  if(!connections.count){[self showError:DXChatError(@"这个项目还没有可用模型。请先在 AiFlex2 里添加模型服务，再回来选择")];return;}
   NSMutableArray<AXSheetItem *> *items=[NSMutableArray new];NSMutableArray<NSDictionary *> *entries=[NSMutableArray new];
   for(id raw in connections){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *name=[NSString stringWithFormat:@"%@ · %@",raw[@"provider"]?:@"",raw[@"model"]?:@""];AXSheetItem *item=[AXSheetItem itemWithTitle:name subtitle:nil];item.selected=[self.connectionID isEqual:raw[@"id"]]&&[self.modelID isEqual:raw[@"model"]];[items addObject:item];[entries addObject:raw];}
   AXPresentSheet(self,@"选择模型",nil,items,^(NSInteger index){

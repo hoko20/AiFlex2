@@ -982,7 +982,7 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
 
 @end
 
-@interface AXGlassSheet : NSObject
+@interface AXGlassSheet : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UIView *overlay;
 @property (nonatomic, strong) AXGlassCard *card;
 @property (nonatomic, copy) NSArray<AXSheetItem *> *items;
@@ -1017,8 +1017,12 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
     _overlay = [UIView new];
     _overlay.translatesAutoresizingMaskIntoConstraints = NO;
     _overlay.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.34];
+    // 只用来点空白关闭。必须走代理判断落点，并且不能取消子视图的触摸：
+    // 否则点在列表行上时，父层手势会先把 UIControl 的触摸取消掉，行看起来完全没反应。
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
                                                                          action:@selector(backdropTapped)];
+    tap.delegate = self;
+    tap.cancelsTouchesInView = NO;
     [_overlay addGestureRecognizer:tap];
 
     AXGradientView *bloom = [AXGradientView new];
@@ -1209,6 +1213,12 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
     } completion:nil];
 }
 
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    // 卡片里的触摸交给行和按钮自己处理；只有卡片外才算“点空白”。
+    return ![touch.view isDescendantOfView:_card];
+}
+
 - (void)backdropTapped { [self closeWithIndex:-1]; }
 - (void)cancelTapped { [self closeWithIndex:-1]; }
 - (void)rowTapped:(UIControl *)sender {
@@ -1230,6 +1240,9 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
 - (void)closeWithIndex:(NSInteger)index {
     if (self.dismissing) return;
     self.dismissing = YES;
+    // 收起动画期间不要再吃触摸：选择后经常立刻弹下一层（项目 → 模型），
+    // 这一层还挡在上面会吞掉新弹窗的第一次点击。
+    self.overlay.userInteractionEnabled = NO;
     [AXVisibleAlerts() removeObjectIdenticalTo:self];
     void (^handler)(NSInteger) = self.handler;
     UIView *overlay = self.overlay;    [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
