@@ -31,6 +31,9 @@ static NSString *DXChatContent(id content) {
 @property NSUInteger port;
 @property NSString *authorizationCode;
 @property BOOL needsConnectionValidation, validatingConnection, restoringWorkspace, storageWarningShown;
+// 上一次自动校验连接失败的时刻。只做 MCP 的用户不会去连 App 侧通道，
+// 但每次点进这个页面都会重新校验一次、干等一个超时，这里用来抑制重复空等。
+@property NSTimeInterval lastValidateFailure;
 - (void)rememberConnectionNow;
 - (void)nextPollIn:(NSTimeInterval)interval;
 - (void)buildNavigationItems;
@@ -119,9 +122,9 @@ static NSString *DXChatContent(id content) {
  self.validatingConnection=YES;[self showConnectionState:1];NSString *host=self.host,*token=self.token;NSUInteger generation=self.sessionLoadGeneration;
  [self request:@"/api/v1/status" body:@{} completion:^(NSDictionary *status,NSError *error){
   self.validatingConnection=NO;if(generation!=self.sessionLoadGeneration||![host isEqual:self.host]||![token isEqual:self.token])return;
-  if(error){self.lastConnectionError=error;[self showConnectionState:3];[self setStatus:[NSString stringWithFormat:@"%@ · 配置已保留，连接设置可查看诊断",[[error.localizedDescription componentsSeparatedByString:@"\n"] firstObject]]];return;}
-  NSString *csrf=status[@"session"][@"csrf"];if(![csrf isKindOfClass:NSString.class]||!csrf.length){[self showConnectionState:3];[self setStatus:@"保存的授权已失效，地址和选择已保留，请重新配对"];return;}
-  self.csrf=csrf;self.needsConnectionValidation=NO;self.missedHeartbeats=0;[self showConnectionState:2];[self rememberConnectionNow];[self startAgentPolling];[self restoreSavedWorkspace];
+  if(error){self.lastConnectionError=error;self.lastValidateFailure=NSProcessInfo.processInfo.systemUptime;[self showConnectionState:3];[self setStatus:[NSString stringWithFormat:@"%@ · 配置已保留，连接设置可查看诊断",[[error.localizedDescription componentsSeparatedByString:@"\n"] firstObject]]];return;}
+  NSString *csrf=status[@"session"][@"csrf"];if(![csrf isKindOfClass:NSString.class]||!csrf.length){self.lastValidateFailure=NSProcessInfo.processInfo.systemUptime;[self showConnectionState:3];[self setStatus:@"保存的授权已失效，地址和选择已保留，请重新配对"];return;}
+  self.csrf=csrf;self.needsConnectionValidation=NO;self.lastValidateFailure=0;self.missedHeartbeats=0;[self showConnectionState:2];[self rememberConnectionNow];[self startAgentPolling];[self restoreSavedWorkspace];
  }];
 }
 - (void)restoreSavedWorkspace {
@@ -585,13 +588,25 @@ static NSString *DXChatContent(id content) {
   self.agentStopped=YES;
   [self request:@"/api/v1/logout" body:@{} completion:^(NSDictionary *result,NSError *error){
    NSError *storageError=nil;[FLEXDylixPreferences clearAuthorization:&storageError];
-   self.sessionLoadGeneration++;self.token=nil;self.csrf=nil;self.authorizationCode=nil;self.jobID=nil;self.needsConnectionValidation=NO;
+   self.sessionLoadGeneration++;self.token=nil;self.csrf=nil;self.authorizationCode=nil;self.jobID=nil;self.needsConnectionValidation=NO;self.lastValidateFailure=0;
+   // 断开后那个浮窗已经没有存在意义，置空让 UIWindow 连同它的视图一起释放。
+   self.statusWindow.hidden=YES;self.statusWindow.windowScene=nil;self.statusWindow=nil;
    self.missedHeartbeats=0;[self showConnectionState:0];[self rememberConnectionNow];[self setStatus:storageError?storageError.localizedDescription:@"已断开 AiFlex2，已保留项目和模型选择"];
   }];
  }]];
  [self presentViewController:alert animated:YES completion:nil];
 }
-- (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];if(self.needsConnectionValidation){[self resumeSavedConnection];return;}[self startAgentPolling];[self pollAgent]; }
+- (void)viewDidAppear:(BOOL)animated {
+ [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];
+ if(self.needsConnectionValidation){
+  // 校验失败后 30 秒内不再自动重试。原先每次进页面都会打一次 /api/v1/status，
+  // 没开 App 侧服务时一直卡在“正在检查连接…”，只用 MCP 的场景纯属空等。
+  NSTimeInterval sinceFail=self.lastValidateFailure>0?NSProcessInfo.processInfo.systemUptime-self.lastValidateFailure:30.0;
+  if(sinceFail<30.0){[self showConnectionState:0];[self setStatus:@"未连接 AiFlex2 · 仅用 MCP 时无需连接"];return;}
+  [self resumeSavedConnection];return;
+ }
+ [self startAgentPolling];[self pollAgent];
+}
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self rememberConnectionNow]; }
 // 被返回上一级（pop）时结束轮询：定时器强持有 self，不 invalidate 会让控制器永远不释放，
 // MCP 的 chat_status/minimize_chat 也会一直落到这个已经看不见的页面上。
