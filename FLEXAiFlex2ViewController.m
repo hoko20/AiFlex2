@@ -1,7 +1,6 @@
 #import "FLEXAiFlex2ViewController.h"
 #import "FLEXAiFlexMCPServer.h"
 #import "FLEXAiFlexRuntime.h"
-#import "FLEXAiFlexSettingsViewController.h"
 #import "FLEXManager.h"
 #import "FLEXManager+Private.h"
 #import "FLEXUtility.h"
@@ -24,10 +23,16 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 @property (nonatomic, strong) UIView *statusChip;
 @property (nonatomic, strong) UIView *statusDot;
 @property (nonatomic, strong) UILabel *statusLabel;
-@property (nonatomic, strong) UILabel *endpointLabel;
-@property (nonatomic, strong) UILabel *tokenLabel;
 @property (nonatomic, strong) UILabel *heroSubtitle;
 @property (nonatomic, strong) UILabel *heroHint;
+
+// 服务设置合并进主页后，这里就是唯一的开关入口：不再有第二份设置页。
+@property (nonatomic, strong) AXRowView *serviceRow;
+@property (nonatomic, strong) AXRowView *portRow;
+@property (nonatomic, strong) AXRowView *endpointRow;
+@property (nonatomic, strong) AXRowView *tokenRow;
+@property (nonatomic, strong) AXRowView *customTokenRow;
+@property (nonatomic, strong) AXRowView *rotateRow;
 
 @property (nonatomic, strong) AXRowView *contextObjectRow;
 @property (nonatomic, strong) AXRowView *contextReportRow;
@@ -37,6 +42,14 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 @property (nonatomic, strong) UILabel *permissionFootnote;
 - (void)applyGlassNavigationBar;
 - (void)showBuildFailure:(NSString *)reason;
+- (void)scheduleRefresh;
+- (AXGlassCard *)buildServiceCard;
+- (void)toggleService:(BOOL)on;
+- (void)editPort;
+- (void)showToken;
+- (void)editCustomToken;
+- (void)rotateToken;
+- (BOOL)panelVisible;
 @end
 
 @implementation FLEXAiFlex2ViewController
@@ -160,6 +173,8 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (void)buildContent {
     UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[
         [self buildHero],
+        [self sectionWithTitle:@"MCP 服务" card:[self buildServiceCard]
+                      footnote:@"服务只在本进程内监听：宿主被挂起或杀死时连接会中断，重新打开 App 后自动恢复。"],
         [self sectionWithTitle:@"当前现场" card:[self buildContextCard] footnote:nil],
         [self sectionWithTitle:@"快捷操作" card:[self buildActionsCard] footnote:nil],
         [self sectionWithTitle:@"授权" card:[self buildPermissionCard] footnote:nil],
@@ -196,16 +211,8 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     return AXSectionView(title, card, footnote);
 }
 
-- (UILabel *)sectionLabel:(NSString *)text {
-    return AXSectionLabel(text);
-}
-
 - (UILabel *)footnoteLabel:(NSString *)text {
     return AXFootnoteLabel(text);
-}
-
-- (UIView *)separatorView {
-    return AXSeparatorView();
 }
 
 - (AXGlassCard *)cardWithRows:(NSArray<UIView *> *)rows radius:(CGFloat)radius {
@@ -259,10 +266,10 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     head.spacing = 13;
     head.alignment = UIStackViewAlignmentTop;
 
-    UILabel *hint = [self footnoteLabel:@"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行"];
+    UILabel *hint = [self footnoteLabel:@"服务随宿主 App 生命周期运行 · 地址、端口与令牌在下方「MCP 服务」中管理"];
     self.heroHint = hint;
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[head, [self buildFields], hint]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[head, hint]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 14;
     stack.alignment = UIStackViewAlignmentFill;
@@ -323,108 +330,46 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     return row;
 }
 
-- (UILabel *)fieldValueLabel {
-    UILabel *label = [UILabel new];
-    label.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightRegular];
-    label.textColor = UIColor.labelColor;
-    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    label.userInteractionEnabled = YES;
-    return label;
-}
+// 服务与授权原来分散在「主页 / 设置页」两处，同一批开关维护两条刷新路径。
+// 现在合成一张卡：开关、端口、地址、令牌、授权码都在这里，不再有第二个页面。
+- (AXGlassCard *)buildServiceCard {
+    __weak typeof(self) weakSelf = self;
 
-- (UIView *)buildFields {
-    UIView *box = [UIView new];
-    box.translatesAutoresizingMaskIntoConstraints = NO;
-    box.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.06];
-    box.layer.cornerRadius = 15;
-    box.layer.cornerCurve = kCACornerCurveContinuous;
-    box.clipsToBounds = YES;
+    self.serviceRow = [self rowTitle:@"MCP 服务" subtitle:@"关闭后端口不再监听，外部客户端无法连接"
+                              symbol:@"antenna.radiowaves.left.and.right" tint:UIColor.systemGreenColor];
+    [self.serviceRow setShowsSwitch:YES];
+    self.serviceRow.onToggle = ^(BOOL on) { [weakSelf toggleService:on]; };
 
-    self.endpointLabel = [self fieldValueLabel];
-    self.tokenLabel = [self fieldValueLabel];
+    self.portRow = [self rowTitle:@"监听端口" subtitle:nil symbol:@"number" tint:UIColor.systemBlueColor];
+    [self.portRow setShowsChevron:YES];
+    self.portRow.valueLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightMedium];
+    self.portRow.onTap = ^{ [weakSelf editPort]; };
 
-    UIView *endpoint = [self fieldRowSymbol:@"link"
-                                    caption:@"访问地址"
-                                      value:self.endpointLabel
-                                     button:@"pencil"
-                                     action:@selector(editEndpoint)];
-    UIView *token = [self fieldRowSymbol:@"key.horizontal.fill"
-                                 caption:@"访问令牌"
-                                   value:self.tokenLabel
-                                  button:@"square.on.square"
-                                  action:@selector(copyToken)];
+    self.endpointRow = [self rowTitle:@"访问地址" subtitle:nil symbol:@"link" tint:UIColor.systemIndigoColor];
+    [self.endpointRow setShowsChevron:YES];
+    self.endpointRow.valueLabel.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightRegular];
+    self.endpointRow.valueLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    self.endpointRow.onTap = ^{ [weakSelf editEndpoint]; };
 
-    UIStackView *rows = [[UIStackView alloc] initWithArrangedSubviews:@[endpoint, [self separatorView], token]];
-    rows.axis = UILayoutConstraintAxisVertical;
-    rows.spacing = 0;
-    rows.translatesAutoresizingMaskIntoConstraints = NO;
-    [box addSubview:rows];
-    [NSLayoutConstraint activateConstraints:@[
-        [rows.topAnchor constraintEqualToAnchor:box.topAnchor constant:2],
-        [rows.leadingAnchor constraintEqualToAnchor:box.leadingAnchor],
-        [rows.trailingAnchor constraintEqualToAnchor:box.trailingAnchor],
-        [rows.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-2]
-    ]];
-    return box;
-}
+    self.tokenRow = [self rowTitle:@"访问令牌" subtitle:@"轻点查看完整令牌并可复制"
+                            symbol:@"key.horizontal.fill" tint:UIColor.systemBlueColor];
+    [self.tokenRow setShowsChevron:YES];
+    self.tokenRow.valueLabel.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightRegular];
+    self.tokenRow.onTap = ^{ [weakSelf showToken]; };
 
-- (UIView *)fieldRowSymbol:(NSString *)symbol
-                   caption:(NSString *)caption
-                     value:(UILabel *)value
-                    button:(NSString *)buttonSymbol
-                    action:(SEL)action {
-    UIControl *row = [UIControl new];
-    row.translatesAutoresizingMaskIntoConstraints = NO;
-    // 整行都能点：文字区不再单独挂手势，交给 UIControl 统一收事件。
-    [row addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    self.customTokenRow = [self rowTitle:@"自定义授权码" subtitle:@"6–64 位字母、数字、点、下划线或短横线"
+                                  symbol:@"square.and.pencil" tint:UIColor.systemBlueColor];
+    [self.customTokenRow setShowsChevron:YES];
+    self.customTokenRow.onTap = ^{ [weakSelf editCustomToken]; };
 
-    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol
-        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]]];
-    icon.tintColor = UIColor.secondaryLabelColor;
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.contentMode = UIViewContentModeScaleAspectFit;
-    [row addSubview:icon];
+    self.rotateRow = [self rowTitle:@"重新生成令牌" subtitle:@"旧令牌立即失效，需同步修改电脑端配置"
+                             symbol:@"arrow.triangle.2.circlepath" tint:UIColor.systemRedColor];
+    [self.rotateRow setShowsChevron:YES];
+    self.rotateRow.titleLabel.textColor = UIColor.systemRedColor;
+    self.rotateRow.onTap = ^{ [weakSelf rotateToken]; };
 
-    UILabel *cap = [UILabel new];
-    cap.text = caption;
-    cap.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightSemibold];
-    cap.textColor = UIColor.tertiaryLabelColor;
-
-    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[cap, value]];
-    texts.axis = UILayoutConstraintAxisVertical;
-    texts.spacing = 2;
-    texts.translatesAutoresizingMaskIntoConstraints = NO;
-    // 纯展示：关掉自身交互，触摸穿透到整行的 UIControl。
-    texts.userInteractionEnabled = NO;
-    [row addSubview:texts];
-
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    [button setImage:[UIImage systemImageNamed:buttonSymbol
-        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold]]
-            forState:UIControlStateNormal];
-    button.tintColor = UIColor.secondaryLabelColor;
-    button.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.07];
-    button.layer.cornerRadius = 9;
-    button.layer.cornerCurve = kCACornerCurveContinuous;
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [row addSubview:button];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:12],
-        [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [icon.widthAnchor constraintEqualToConstant:16],
-        [icon.heightAnchor constraintEqualToConstant:16],
-        [texts.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:10],
-        [texts.trailingAnchor constraintEqualToAnchor:button.leadingAnchor constant:-10],
-        [texts.topAnchor constraintEqualToAnchor:row.topAnchor constant:9],
-        [texts.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-9],
-        [button.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-10],
-        [button.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [button.widthAnchor constraintEqualToConstant:30],
-        [button.heightAnchor constraintEqualToConstant:30]
-    ]];
-    return row;
+    return [self cardWithRows:@[self.serviceRow, self.portRow, self.endpointRow, self.tokenRow,
+                                self.customTokenRow, self.rotateRow] radius:22];
 }
 
 #pragma mark - Cards
@@ -483,11 +428,6 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     [enable setShowsChevron:YES];
     enable.onTap = ^{ [weakSelf enableAllGroupsTapped]; };
 
-    AXRowView *settings = [self rowTitle:@"服务设置" subtitle:nil
-                                  symbol:@"slider.horizontal.3" tint:UIColor.systemGrayColor];
-    [settings setShowsChevron:YES];
-    settings.onTap = ^{ [weakSelf openSettings]; };
-
     AXRowView *restart = [self rowTitle:@"重启 MCP 服务" subtitle:nil
                                  symbol:@"arrow.triangle.2.circlepath" tint:UIColor.systemGreenColor];
     [restart setShowsChevron:YES];
@@ -500,7 +440,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     [collapse setShowsChevron:YES];
     collapse.onTap = ^{ [weakSelf collapseTapped]; };
 
-    return [self cardWithRows:@[chat, config, enable, settings, restart, collapse] radius:22];
+    return [self cardWithRows:@[chat, config, enable, restart, collapse] radius:22];
 }
 
 - (UIView *)buildPermissionCard {
@@ -579,23 +519,30 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     self.statusDot.backgroundColor = tint;
     self.statusChip.backgroundColor = [tint colorWithAlphaComponent:0.16];
 
-    self.endpointLabel.text = [FLEXAiFlexMCPServer endpoint];
+    // 与服务卡共用同一份状态：开关、端口、地址、令牌都从这里回写。
+    UISwitch *serviceToggle = self.serviceRow.toggle;
+    if (!serviceToggle.isTracking && serviceToggle.isOn != enabled) serviceToggle.on = enabled;
+    [self.portRow setValueText:[NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]]];
+    [self.endpointRow setValueText:[FLEXAiFlexMCPServer endpoint]];
+    if ([FLEXAiFlexMCPServer authRequired]) {
+        NSString *token = [FLEXAiFlexMCPServer token];
+        [self.tokenRow setValueText:token.length > 4
+            ? [NSString stringWithFormat:@"%@••••••••", [token substringToIndex:4]]
+            : @"已生成"];
+    } else {
+        [self.tokenRow setValueText:@"未启用（仅限可信局域网）"];
+    }
+    self.customTokenRow.hidden = ![FLEXAiFlexMCPServer authRequired];
+    self.rotateRow.hidden = ![FLEXAiFlexMCPServer authRequired];
+
     // 端口被占自动顺延过就把原因写在脚注上，避免用户以为端口被无故改掉。
     NSString *notice = [FLEXAiFlexMCPServer portNotice];
     if (notice.length) {
         self.heroHint.text = notice;
         self.heroHint.textColor = UIColor.systemOrangeColor;
     } else {
-        self.heroHint.text = @"轻点地址可修改 · 轻点令牌可复制 · 服务随宿主 App 生命周期运行";
+        self.heroHint.text = @"服务随宿主 App 生命周期运行 · 地址、端口与令牌在下方「MCP 服务」中管理";
         self.heroHint.textColor = UIColor.tertiaryLabelColor;
-    }
-    if ([FLEXAiFlexMCPServer authRequired]) {
-        NSString *token = [FLEXAiFlexMCPServer token];
-        self.tokenLabel.text = token.length > 4
-            ? [NSString stringWithFormat:@"%@••••••••", [token substringToIndex:4]]
-            : @"已生成";
-    } else {
-        self.tokenLabel.text = @"未启用（仅限可信局域网）";
     }
     self.heroSubtitle.text = [NSString stringWithFormat:@"FLEX++ 运行时 · %@", self.className];
 
@@ -699,9 +646,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     }
     // 等切换动画走完再同步 UI：立刻 refresh 会把正在动画中的 UISwitch 直接改写，
     // 视觉上就像“拨了又弹回去、点了没反应”。
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
+    [self scheduleRefresh];
 }
 
 - (void)enableAllGroupsTapped {
@@ -737,7 +682,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 - (void)editEndpoint {
     AXPresentAlert(self, @"自定义访问地址",
-        @"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用设置页配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。",
+        @"填写手机可达的 IP 或域名（可粘贴完整 URL），端口沿用上方配置。\n同机连接用 127.0.0.1；电脑端连接用手机局域网地址。",
         AXAlertMessageStyleText, ^(UITextField *field) {
         field.text = [FLEXAiFlexMCPServer endpointHost];
         field.placeholder = @"IP 或域名，如 127.0.0.1";
@@ -764,21 +709,111 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     ]);
 }
 
-- (void)copyToken {
+#pragma mark - Service actions
+
+- (void)toggleService:(BOOL)on {
+    [FLEXAiFlexMCPServer setEnabled:on];
+    if (on) [[FLEXAiFlexMCPServer shared] start];
+    else [[FLEXAiFlexMCPServer shared] stop];
+    [self scheduleRefresh];
+}
+
+- (void)editPort {
+    __weak typeof(self) weakSelf = self;
+    AXPresentAlert(self, @"监听端口",
+        @"1024–65535，修改后自动重启服务。若端口已被占用，会自动顺延到下一个可用端口。",
+        AXAlertMessageStyleText, ^(UITextField *field) {
+            field.keyboardType = UIKeyboardTypeNumberPad;
+            field.text = [NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]];
+        }, @[
+        [AXAlertButton buttonWithTitle:@"保存" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            NSUInteger port = [alert.text integerValue];
+            if (port < 1024 || port > 65535) {
+                [weakSelf toast:@"端口需在 1024–65535 之间"];
+                return;
+            }
+            [FLEXAiFlexMCPServer setPort:port];
+            if ([FLEXAiFlexMCPServer isEnabled]) {
+                [[FLEXAiFlexMCPServer shared] stop];
+                [[FLEXAiFlexMCPServer shared] start];
+            }
+            [weakSelf scheduleRefresh];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
+}
+
+- (void)showToken {
     if (![FLEXAiFlexMCPServer authRequired]) {
         [self toast:@"当前未启用授权保护"];
         return;
     }
-    [self copyText:[FLEXAiFlexMCPServer token] message:@"已复制访问令牌"];
+    NSString *token = [FLEXAiFlexMCPServer token];
+    __weak typeof(self) weakSelf = self;
+    AXPresentAlert(self, @"访问令牌", token ?: @"", AXAlertMessageStyleCode, nil, @[
+        [AXAlertButton buttonWithTitle:@"复制" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            UIPasteboard.generalPasteboard.string = token ?: @"";
+            [weakSelf toast:@"已复制访问令牌"];
+        }],
+        [AXAlertButton buttonWithTitle:@"关闭" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
+}
+
+- (void)editCustomToken {
+    if (![FLEXAiFlexMCPServer authRequired]) {
+        [self toast:@"当前未启用授权保护"];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    AXPresentAlert(self, @"自定义授权码", @"6–64 位字母、数字、点、下划线或短横线。",
+        AXAlertMessageStyleText, ^(UITextField *field) {
+            field.placeholder = @"输入授权码";
+            field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            field.autocorrectionType = UITextAutocorrectionTypeNo;
+        }, @[
+        [AXAlertButton buttonWithTitle:@"保存" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert) {
+            if (![FLEXAiFlexMCPServer setToken:alert.text]) {
+                [weakSelf toast:@"授权码格式不正确"];
+                return;
+            }
+            if ([FLEXAiFlexMCPServer isEnabled]) {
+                [[FLEXAiFlexMCPServer shared] stop];
+                [[FLEXAiFlexMCPServer shared] start];
+            }
+            [weakSelf toast:@"已更新授权码"];
+            [weakSelf scheduleRefresh];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
+}
+
+- (void)rotateToken {
+    if (![FLEXAiFlexMCPServer authRequired]) {
+        [self toast:@"当前未启用授权保护"];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    AXPresentAlert(self, @"重新生成令牌", @"旧令牌立即失效，需要同步修改电脑端 MCP 配置。",
+        AXAlertMessageStyleText, nil, @[
+        [AXAlertButton buttonWithTitle:@"重新生成" style:AXAlertButtonStyleDestructive handler:^(AXGlassAlert *alert) {
+            [FLEXAiFlexMCPServer rotateToken];
+            [weakSelf toast:@"已重新生成令牌"];
+            [weakSelf scheduleRefresh];
+        }],
+        [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+    ]);
+}
+
+// 拨动开关到 refresh 之间隔一拍：立刻回写会把正在播放的切换动画直接截断。
+- (void)scheduleRefresh {
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
 }
 
 - (void)copyText:(NSString *)text message:(NSString *)message {
     UIPasteboard.generalPasteboard.string = text ?: @"";
     [self toast:message];
-}
-
-- (void)openSettings {
-    [self.navigationController pushViewController:[FLEXAiFlexSettingsViewController new] animated:YES];
 }
 
 - (void)openChat {

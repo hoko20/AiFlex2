@@ -3,7 +3,7 @@
 #import "FLEXDylixAddress.h"
 #import "FLEXDylixConnection.h"
 #import "FLEXDylixPreferences.h"
-#import "FLEXAiFlexSettingsViewController.h"
+#import "FLEXAiFlex2UI.h"
 #import "FLEXDylixMarkdown.h"
 #import "FLEXDylixStatusWindow.h"
 #import "FLEXManager+Private.h"
@@ -33,6 +33,11 @@ static NSString *DXChatContent(id content) {
 @property BOOL needsConnectionValidation, validatingConnection, restoringWorkspace, storageWarningShown;
 - (void)rememberConnectionNow;
 - (void)nextPollIn:(NSTimeInterval)interval;
+- (void)buildNavigationItems;
+- (UIView *)buildHeader;
+- (void)buildMessageList;
+- (UIView *)buildComposer;
+- (UIButton *)iconButton:(NSString *)symbol action:(SEL)action label:(NSString *)label;
 @property UILabel *statusLabel, *activityLabel, *contextLabel;
 @property UITextView *input;
 @property UIScrollView *messageScroll;
@@ -77,7 +82,7 @@ static NSString *DXChatContent(id content) {
 @implementation FLEXDylixChatViewController
 @synthesize busy=_busy;
 - (void)setBusy:(BOOL)busy {
- _busy=busy;self.sendButton.enabled=YES;
+ _busy=busy;
  if(!busy){[self.activeToolOperations removeAllObjects];self.waitingApproval=NO;}
  [self.sendButton setTitle:busy?@"停止":@"发送" forState:UIControlStateNormal];
  [self refreshAgentStatus];
@@ -155,7 +160,7 @@ static NSString *DXChatContent(id content) {
 - (UIButton *)button:(NSString *)title action:(SEL)action {
  UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem]; [button setTitle:title forState:UIControlStateNormal];
  button.titleLabel.font=[UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
- button.contentEdgeInsets=UIEdgeInsetsMake(8,10,8,10); button.layer.cornerRadius=8;
+ button.contentEdgeInsets=UIEdgeInsetsMake(8,10,8,10); button.layer.cornerRadius=10;
  if (@available(iOS 13.0, *)) button.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
  else button.backgroundColor=UIColor.whiteColor;
  [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside]; return button;
@@ -186,75 +191,181 @@ static NSString *DXChatContent(id content) {
 - (void)viewDidLoad {
  [super viewDidLoad]; self.title=@"AiFlex2 AI"; self.view.backgroundColor=UIColor.systemGroupedBackgroundColor;
  self.runtime=[FLEXAiFlexRuntime sharedRuntime];self.runtime.selectedObject=self.selectedObject;self.agentReplies=[NSMutableDictionary new];self.commandGenerations=[NSMutableDictionary new];
- self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc]initWithTitle:@"新会话" style:UIBarButtonItemStylePlain target:self action:@selector(newSession)];
- if (self.navigationController.viewControllers.firstObject == self) {
-  self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"minus"] style:UIBarButtonItemStylePlain target:self action:@selector(closeTapped)];
-  self.navigationItem.leftBarButtonItem.accessibilityLabel=@"收起会话，AI 继续运行";
- }
- UIBarButtonItem *disconnect=[[UIBarButtonItem alloc]initWithTitle:@"断开" style:UIBarButtonItemStylePlain target:self action:@selector(disconnectTapped)];
- self.navigationItem.rightBarButtonItems=@[self.navigationItem.rightBarButtonItem,disconnect];
- self.connectButton=[self button:self.csrf.length?@"连接设置":@"连接 AiFlex2" action:@selector(connectTapped)];
- self.permissionButton=[self button:@"工具权限" action:@selector(permissionTapped)];
- if (@available(iOS 13.0, *)) {
-  [self.connectButton setTitle:nil forState:UIControlStateNormal];[self.connectButton setImage:[UIImage systemImageNamed:@"gearshape"] forState:UIControlStateNormal];
-  [self.permissionButton setTitle:nil forState:UIControlStateNormal];[self.permissionButton setImage:[UIImage systemImageNamed:@"lock.shield"] forState:UIControlStateNormal];
- } else {[self.connectButton setTitle:@"连" forState:UIControlStateNormal];[self.permissionButton setTitle:@"权" forState:UIControlStateNormal];}
- self.connectButton.accessibilityLabel=@"连接设置";self.permissionButton.accessibilityLabel=@"工具权限";
- UIButton *mcpButton=[self button:@"MCP" action:@selector(mcpTapped)];
- if (@available(iOS 13.0, *)) {[mcpButton setTitle:nil forState:UIControlStateNormal];[mcpButton setImage:[UIImage systemImageNamed:@"network"] forState:UIControlStateNormal];}
- else {[mcpButton setTitle:@"MCP" forState:UIControlStateNormal];}
- mcpButton.accessibilityLabel=@"MCP 服务";
- self.projectButton=[self button:@"选择项目" action:@selector(projectTapped)];
- self.modelButton=[self button:@"选择模型" action:@selector(modelTapped)];
- self.sessionButton=[self button:@"会话 · 新会话  ▾" action:@selector(sessionTapped)];
- self.sessionButton.contentHorizontalAlignment=UIControlContentHorizontalAlignmentLeft;
- self.sessionButton.titleLabel.lineBreakMode=NSLineBreakByTruncatingTail;
- UIColor *secondary=UIColor.grayColor, *surface=UIColor.whiteColor, *accent=UIColor.systemBlueColor;
- if (@available(iOS 13.0, *)) { secondary=UIColor.secondaryLabelColor; surface=UIColor.secondarySystemGroupedBackgroundColor; }
- self.statusLabel=[UILabel new];self.statusLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];self.statusLabel.textColor=secondary;self.statusLabel.text=self.csrf.length?@"正在检查连接":@"未连接";self.statusLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
- self.statusDot=[UIView new];self.statusDot.backgroundColor=UIColor.systemGrayColor;self.statusDot.layer.cornerRadius=4;
- UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,self.permissionButton,mcpButton,self.connectButton]];statusRow.axis=UILayoutConstraintAxisHorizontal;statusRow.spacing=6;statusRow.alignment=UIStackViewAlignmentCenter;
- [self.statusLabel setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
- [self.connectButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
- self.contextLabel=[UILabel new];self.contextLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightMedium];self.contextLabel.textColor=secondary;self.contextLabel.text=[@"FLEX 现场  ·  " stringByAppendingString:self.className];self.contextLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
- self.activityLabel=[UILabel new];self.activityLabel.font=[UIFont systemFontOfSize:12];self.activityLabel.textColor=secondary;self.activityLabel.text=@"就绪";self.activityLabel.lineBreakMode=NSLineBreakByTruncatingTail;
- self.activityLabel.textAlignment=NSTextAlignmentRight;self.activityLabel.numberOfLines=2;self.activityLabel.accessibilityIdentifier=@"dylix.agent.activity";
- UIStackView *selectors=[[UIStackView alloc]initWithArrangedSubviews:@[self.projectButton,self.modelButton,self.sessionButton]];selectors.axis=UILayoutConstraintAxisHorizontal;selectors.spacing=6;selectors.distribution=UIStackViewDistributionFillEqually;
- for(UIButton *button in @[self.projectButton,self.modelButton,self.sessionButton]){button.titleLabel.lineBreakMode=NSLineBreakByTruncatingTail;button.contentEdgeInsets=UIEdgeInsetsMake(6,7,6,7);}
- self.sessionButton.contentHorizontalAlignment=UIControlContentHorizontalAlignmentCenter;
- UIStackView *metaRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.contextLabel,self.activityLabel]];metaRow.axis=UILayoutConstraintAxisHorizontal;metaRow.spacing=8;metaRow.distribution=UIStackViewDistributionFillEqually;
- if(self.projectID.length)[self.projectButton setTitle:self.projectName?:@"选择项目" forState:UIControlStateNormal];if(self.modelID.length)[self.modelButton setTitle:self.modelID forState:UIControlStateNormal];
- UIView *header=[UIView new];header.backgroundColor=surface;header.layer.cornerRadius=12;
- for(UIView *view in @[statusRow,selectors,metaRow]){view.translatesAutoresizingMaskIntoConstraints=NO;[header addSubview:view];}
- self.messageScroll=[UIScrollView new];self.messageScroll.alwaysBounceVertical=YES;self.messageScroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;
- self.messageStack=[UIStackView new];self.messageStack.axis=UILayoutConstraintAxisVertical;self.messageStack.spacing=14;self.messageStack.alignment=UIStackViewAlignmentFill;
- self.messageStack.translatesAutoresizingMaskIntoConstraints=NO;[self.messageScroll addSubview:self.messageStack];
- self.input=[UITextView new];self.input.font=[UIFont systemFontOfSize:15];self.input.backgroundColor=surface;self.input.layer.cornerRadius=12;self.input.textContainerInset=UIEdgeInsetsMake(10,10,10,10);self.input.delegate=self;self.input.scrollEnabled=YES;
- self.input.layer.borderWidth=1;self.input.layer.borderColor=UIColor.systemGray4Color.CGColor;
- self.inputPlaceholder=[UILabel new];self.inputPlaceholder.text=@"描述问题，询问当前 FLEX 现场…";self.inputPlaceholder.font=self.input.font;self.inputPlaceholder.textColor=secondary;self.inputPlaceholder.translatesAutoresizingMaskIntoConstraints=NO;[self.input addSubview:self.inputPlaceholder];
- self.sendButton=[self button:@"发送" action:@selector(sendTapped)];[self.sendButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.sendButton.backgroundColor=accent;
- UIStackView *composer=[[UIStackView alloc]initWithArrangedSubviews:@[self.input,self.sendButton]];composer.axis=UILayoutConstraintAxisHorizontal;composer.spacing=8;composer.alignment=UIStackViewAlignmentBottom;
+ [self buildNavigationItems];
+ UIView *header=[self buildHeader];
+ [self buildMessageList];
+ UIView *composer=[self buildComposer];
  for(UIView *view in @[header,self.messageScroll,composer]){view.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:view];}
- UILayoutGuide *bottom=self.view.safeAreaLayoutGuide;
- if (@available(iOS 15.0, *)) bottom=self.view.keyboardLayoutGuide;
+ // 最低支持 iOS 15，键盘引导线恒定可用，不再需要退回 safeArea 的遮挡分支。
+ UILayoutGuide *bottom=self.view.keyboardLayoutGuide;
  [NSLayoutConstraint activateConstraints:@[
   [header.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],[header.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],[header.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
-  [statusRow.topAnchor constraintEqualToAnchor:header.topAnchor constant:6],[statusRow.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:10],[statusRow.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-10],
-  [self.statusDot.widthAnchor constraintEqualToConstant:8],[self.statusDot.heightAnchor constraintEqualToConstant:8],
-  [self.connectButton.widthAnchor constraintEqualToConstant:34],[self.connectButton.heightAnchor constraintEqualToConstant:32],
-  [self.permissionButton.widthAnchor constraintEqualToConstant:34],[self.permissionButton.heightAnchor constraintEqualToConstant:32],
-  [selectors.topAnchor constraintEqualToAnchor:statusRow.bottomAnchor constant:5],[selectors.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[selectors.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[selectors.heightAnchor constraintEqualToConstant:34],
-  [metaRow.topAnchor constraintEqualToAnchor:selectors.bottomAnchor constant:5],[metaRow.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[metaRow.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[metaRow.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-7],
   [self.messageScroll.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:8],[self.messageScroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],[self.messageScroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-  [self.messageStack.topAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.topAnchor constant:14],[self.messageStack.bottomAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.bottomAnchor constant:-14],[self.messageStack.leadingAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.leadingAnchor constant:12],[self.messageStack.trailingAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.trailingAnchor constant:-12],[self.messageStack.widthAnchor constraintEqualToAnchor:self.messageScroll.frameLayoutGuide.widthAnchor constant:-24],
-  [composer.topAnchor constraintEqualToAnchor:self.messageScroll.bottomAnchor constant:8],[composer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],[composer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],[composer.bottomAnchor constraintEqualToAnchor:bottom.topAnchor constant:-8],
-  [self.inputPlaceholder.leadingAnchor constraintEqualToAnchor:self.input.leadingAnchor constant:15],[self.inputPlaceholder.topAnchor constraintEqualToAnchor:self.input.topAnchor constant:12],
-  [self.sendButton.widthAnchor constraintEqualToConstant:58],[self.sendButton.heightAnchor constraintEqualToConstant:44]
+  [composer.topAnchor constraintEqualToAnchor:self.messageScroll.bottomAnchor constant:8],[composer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],[composer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],[composer.bottomAnchor constraintEqualToAnchor:bottom.topAnchor constant:-8]
  ]];
- self.inputHeight=[self.input.heightAnchor constraintEqualToConstant:76];self.inputHeight.active=YES;
  if(!self.messages.count)[self.messages addObject:[@{@"role":@"tip",@"text":@"选中 FLEX 对象后直接提问。AI 可读取现场报告，并按权限调用实时工具。"} mutableCopy]];
  [self updateSessionButton];[self showConnectionState:self.csrf.length?1:0];
  [self renderMessages];
+}
+
+#pragma mark - Layout
+
+// 顶栏只保留必要信息，改成图标按钮后窄屏不再挤掉状态文字。
+- (void)buildNavigationItems {
+ UIBarButtonItem *newSession=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"square.and.pencil"] style:UIBarButtonItemStylePlain target:self action:@selector(newSession)];
+ newSession.accessibilityLabel=@"新会话";
+ UIBarButtonItem *disconnect=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"wifi.slash"] style:UIBarButtonItemStylePlain target:self action:@selector(disconnectTapped)];
+ disconnect.accessibilityLabel=@"断开连接";
+ self.navigationItem.rightBarButtonItems=@[disconnect,newSession];
+ if(self.navigationController.viewControllers.firstObject==self){
+  UIBarButtonItem *close=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"minus"] style:UIBarButtonItemStylePlain target:self action:@selector(closeTapped)];
+  close.accessibilityLabel=@"收起会话，AI 继续运行";
+  self.navigationItem.leftBarButtonItem=close;
+ }
+}
+
+// 三行信息（状态与入口 / 项目·模型·会话 / 现场与活动）外面套玻璃卡，
+// 和面板其它页同一套视觉；纯白圆角块在深色模式下会和背景糊成一片。
+- (UIView *)buildHeader {
+ self.statusLabel=[UILabel new];
+ self.statusLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+ self.statusLabel.textColor=UIColor.secondaryLabelColor;
+ self.statusLabel.text=self.csrf.length?@"正在检查连接":@"未连接";
+ self.statusLabel.lineBreakMode=NSLineBreakByTruncatingTail;
+ [self.statusLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+ self.statusDot=[UIView new];
+ self.statusDot.backgroundColor=UIColor.systemGrayColor;
+ self.statusDot.layer.cornerRadius=4;
+ self.statusDot.translatesAutoresizingMaskIntoConstraints=NO;
+ [NSLayoutConstraint activateConstraints:@[
+  [self.statusDot.widthAnchor constraintEqualToConstant:8],[self.statusDot.heightAnchor constraintEqualToConstant:8]
+ ]];
+
+ self.connectButton=[self iconButton:@"gearshape" action:@selector(connectTapped) label:@"连接设置"];
+ self.permissionButton=[self iconButton:@"lock.shield" action:@selector(permissionTapped) label:@"工具权限"];
+ UIButton *mcpButton=[self iconButton:@"network" action:@selector(mcpTapped) label:@"MCP 服务"];
+
+ UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,mcpButton,self.permissionButton,self.connectButton]];
+ statusRow.axis=UILayoutConstraintAxisHorizontal;
+ statusRow.spacing=6;
+ statusRow.alignment=UIStackViewAlignmentCenter;
+
+ self.projectButton=[self button:@"选择项目" action:@selector(projectTapped)];
+ self.modelButton=[self button:@"选择模型" action:@selector(modelTapped)];
+ self.sessionButton=[self button:@"会话 · 新会话  ▾" action:@selector(sessionTapped)];
+ self.sessionButton.contentHorizontalAlignment=UIControlContentHorizontalAlignmentCenter;
+ for(UIButton *button in @[self.projectButton,self.modelButton,self.sessionButton]){
+  button.titleLabel.lineBreakMode=NSLineBreakByTruncatingTail;
+  button.contentEdgeInsets=UIEdgeInsetsMake(6,7,6,7);
+ }
+
+ UIStackView *selectors=[[UIStackView alloc]initWithArrangedSubviews:@[self.projectButton,self.modelButton,self.sessionButton]];
+ selectors.axis=UILayoutConstraintAxisHorizontal;
+ selectors.spacing=6;
+ selectors.distribution=UIStackViewDistributionFillEqually;
+
+ self.contextLabel=[UILabel new];
+ self.contextLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+ self.contextLabel.textColor=UIColor.secondaryLabelColor;
+ self.contextLabel.text=[@"FLEX 现场  ·  " stringByAppendingString:self.className];
+ self.contextLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
+
+ self.activityLabel=[UILabel new];
+ self.activityLabel.font=[UIFont systemFontOfSize:12];
+ self.activityLabel.textColor=UIColor.secondaryLabelColor;
+ self.activityLabel.text=@"就绪";
+ self.activityLabel.lineBreakMode=NSLineBreakByTruncatingTail;
+ self.activityLabel.textAlignment=NSTextAlignmentRight;
+ self.activityLabel.numberOfLines=2;
+ self.activityLabel.accessibilityIdentifier=@"dylix.agent.activity";
+
+ UIStackView *metaRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.contextLabel,self.activityLabel]];
+ metaRow.axis=UILayoutConstraintAxisHorizontal;
+ metaRow.spacing=8;
+ metaRow.distribution=UIStackViewDistributionFillEqually;
+
+ if(self.projectID.length)[self.projectButton setTitle:self.projectName?:@"选择项目" forState:UIControlStateNormal];
+ if(self.modelID.length)[self.modelButton setTitle:self.modelID forState:UIControlStateNormal];
+
+ AXGlassCard *header=[[AXGlassCard alloc]initWithRadius:20];
+ for(UIView *view in @[statusRow,selectors,metaRow]){view.translatesAutoresizingMaskIntoConstraints=NO;[header addSubview:view];}
+ [NSLayoutConstraint activateConstraints:@[
+  [statusRow.topAnchor constraintEqualToAnchor:header.topAnchor constant:10],[statusRow.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:12],[statusRow.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-12],
+  [self.connectButton.widthAnchor constraintEqualToConstant:32],[self.connectButton.heightAnchor constraintEqualToConstant:30],
+  [self.permissionButton.widthAnchor constraintEqualToConstant:32],[self.permissionButton.heightAnchor constraintEqualToConstant:30],
+  [mcpButton.widthAnchor constraintEqualToConstant:32],[mcpButton.heightAnchor constraintEqualToConstant:30],
+  [selectors.topAnchor constraintEqualToAnchor:statusRow.bottomAnchor constant:4],[selectors.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[selectors.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[selectors.heightAnchor constraintEqualToConstant:32],
+  [metaRow.topAnchor constraintEqualToAnchor:selectors.bottomAnchor constant:4],[metaRow.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[metaRow.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[metaRow.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-10]
+ ]];
+ return header;
+}
+
+- (void)buildMessageList {
+ self.messageScroll=[UIScrollView new];
+ self.messageScroll.alwaysBounceVertical=YES;
+ self.messageScroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;
+ self.messageStack=[UIStackView new];
+ self.messageStack.axis=UILayoutConstraintAxisVertical;
+ self.messageStack.spacing=14;
+ self.messageStack.alignment=UIStackViewAlignmentFill;
+ self.messageStack.translatesAutoresizingMaskIntoConstraints=NO;
+ [self.messageScroll addSubview:self.messageStack];
+ [NSLayoutConstraint activateConstraints:@[
+  [self.messageStack.topAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.topAnchor constant:14],
+  [self.messageStack.bottomAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.bottomAnchor constant:-14],
+  [self.messageStack.leadingAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.leadingAnchor constant:12],
+  [self.messageStack.trailingAnchor constraintEqualToAnchor:self.messageScroll.contentLayoutGuide.trailingAnchor constant:-12],
+  [self.messageStack.widthAnchor constraintEqualToAnchor:self.messageScroll.frameLayoutGuide.widthAnchor constant:-24]
+ ]];
+}
+
+// 输入框跟着内容长，但最少一行、最多约五行；固定 76 起步会让单行输入也空掉一半。
+- (UIView *)buildComposer {
+ self.input=[UITextView new];
+ self.input.font=[UIFont systemFontOfSize:15];
+ self.input.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
+ self.input.layer.cornerRadius=14;
+ self.input.layer.cornerCurve=kCACornerCurveContinuous;
+ self.input.textContainerInset=UIEdgeInsetsMake(10,10,10,10);
+ self.input.delegate=self;
+ self.input.scrollEnabled=YES;
+
+ self.inputPlaceholder=[UILabel new];
+ self.inputPlaceholder.text=@"描述问题，询问当前 FLEX 现场…";
+ self.inputPlaceholder.font=self.input.font;
+ self.inputPlaceholder.textColor=UIColor.secondaryLabelColor;
+ self.inputPlaceholder.translatesAutoresizingMaskIntoConstraints=NO;
+ [self.input addSubview:self.inputPlaceholder];
+
+ self.sendButton=[self button:@"发送" action:@selector(sendTapped)];
+ [self.sendButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ self.sendButton.backgroundColor=UIColor.systemBlueColor;
+ self.sendButton.titleLabel.font=[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+
+ UIStackView *composer=[[UIStackView alloc]initWithArrangedSubviews:@[self.input,self.sendButton]];
+ composer.axis=UILayoutConstraintAxisHorizontal;
+ composer.spacing=8;
+ composer.alignment=UIStackViewAlignmentBottom;
+
+ [NSLayoutConstraint activateConstraints:@[
+  [self.inputPlaceholder.leadingAnchor constraintEqualToAnchor:self.input.leadingAnchor constant:15],[self.inputPlaceholder.topAnchor constraintEqualToAnchor:self.input.topAnchor constant:12],
+  [self.sendButton.widthAnchor constraintEqualToConstant:60],[self.sendButton.heightAnchor constraintEqualToConstant:44]
+ ]];
+ self.inputHeight=[self.input.heightAnchor constraintEqualToConstant:44];
+ self.inputHeight.active=YES;
+ return composer;
+}
+
+- (UIButton *)iconButton:(NSString *)symbol action:(SEL)action label:(NSString *)label {
+ UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
+ [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+ button.tintColor=UIColor.secondaryLabelColor;
+ button.layer.cornerRadius=9;
+ button.layer.cornerCurve=kCACornerCurveContinuous;
+ button.accessibilityLabel=label;
+ [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+ return button;
 }
 - (void)setStatus:(NSString *)text {self.idleStatus=text;[self rememberConnection];[self refreshAgentStatus];}
 - (void)showConnectionState:(NSUInteger)state {
@@ -306,8 +417,9 @@ static NSString *DXChatContent(id content) {
    UILabel *label=[UILabel new];label.text=value;label.numberOfLines=0;label.textAlignment=NSTextAlignmentCenter;label.font=[UIFont systemFontOfSize:13];label.textColor=UIColor.secondaryLabelColor;label.translatesAutoresizingMaskIntoConstraints=NO;[row addSubview:label];
    [NSLayoutConstraint activateConstraints:@[[label.topAnchor constraintEqualToAnchor:row.topAnchor],[label.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],[label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:15],[label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-15]]];
   } else {
-   UIView *bubble=[UIView new];bubble.backgroundColor=mine?UIColor.systemBlueColor:UIColor.secondarySystemGroupedBackgroundColor;bubble.layer.cornerRadius=14;bubble.translatesAutoresizingMaskIntoConstraints=NO;[row addSubview:bubble];
-   UILabel *author=[UILabel new];author.text=mine?@"我":@"DYLIX AI";author.font=[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];author.textColor=UIColor.secondaryLabelColor;author.translatesAutoresizingMaskIntoConstraints=NO;[row addSubview:author];
+   UIView *bubble=[UIView new];bubble.backgroundColor=mine?UIColor.systemBlueColor:UIColor.secondarySystemGroupedBackgroundColor;bubble.layer.cornerRadius=16;bubble.layer.cornerCurve=kCACornerCurveContinuous;
+   bubble.translatesAutoresizingMaskIntoConstraints=NO;[row addSubview:bubble];
+   UILabel *author=[UILabel new];author.text=mine?@"我":@"AiFlex2";author.font=[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];author.textColor=UIColor.secondaryLabelColor;author.translatesAutoresizingMaskIntoConstraints=NO;[row addSubview:author];
    UIButton *copy=[UIButton buttonWithType:UIButtonTypeSystem];[copy setTitle:@"复制" forState:UIControlStateNormal];copy.titleLabel.font=[UIFont systemFontOfSize:11];copy.tag=index;copy.translatesAutoresizingMaskIntoConstraints=NO;[copy addTarget:self action:@selector(copyMessage:) forControlEvents:UIControlEventTouchUpInside];[row addSubview:copy];
    UILabel *label=[UILabel new];label.text=value.length?value:@"正在回复…";label.numberOfLines=0;label.lineBreakMode=NSLineBreakByWordWrapping;label.font=[UIFont systemFontOfSize:15];label.textColor=mine?UIColor.whiteColor:UIColor.labelColor;label.translatesAutoresizingMaskIntoConstraints=NO;[bubble addSubview:label];
    if(!mine)label.attributedText=FLEXDylixRenderMarkdown(value,label.textColor);
@@ -377,7 +489,7 @@ static NSString *DXChatContent(id content) {
   menu.popoverPresentationController.sourceView=self.sessionButton;menu.popoverPresentationController.sourceRect=self.sessionButton.bounds;[self presentViewController:menu animated:YES completion:nil];[self setStatus:@"选择现有会话或新建会话"];
  }];
 }
-- (void)textViewDidChange:(UITextView *)textView {self.inputPlaceholder.hidden=textView.text.length>0;CGFloat height=MIN(150,MAX(76,[textView sizeThatFits:CGSizeMake(textView.bounds.size.width,CGFLOAT_MAX)].height));self.inputHeight.constant=height;}
+- (void)textViewDidChange:(UITextView *)textView {self.inputPlaceholder.hidden=textView.text.length>0;CGFloat height=MIN(150,MAX(44,[textView sizeThatFits:CGSizeMake(textView.bounds.size.width,CGFLOAT_MAX)].height));if(fabs(height-self.inputHeight.constant)>0.5)self.inputHeight.constant=height;}
 - (void)applicationStateChanged:(NSNotification *)note {self.statusSuspended=[note.name isEqual:UIApplicationWillResignActiveNotification];[self refreshAgentStatus];}
 - (NSString *)phaseForOperation:(NSString *)operation {
  NSDictionary *names=@{@"gesture":@"正在操作页面",@"activate_control":@"正在点击控件",@"scroll_view":@"正在滚动页面",@"set_view":@"正在调整视图",@"undo":@"正在恢复视图",@"input_text":@"正在输入文字",@"set_control_value":@"正在调整控件",@"capture_screen":@"正在截图观察",@"screen_elements":@"正在读取控件",@"view_tree":@"正在读取视图树",@"object_info":@"正在核对对象",@"class_info":@"正在核对类信息",@"class_header":@"正在读取头文件",@"minimize_chat":@"正在收起会话",@"restore_chat":@"正在恢复会话",@"open_tool":@"正在打开 FLEX 工具",@"select_row":@"正在操作 FLEX 页面",@"flex_scroll":@"正在滚动 FLEX 页面",@"set_search":@"正在搜索 FLEX 页面",@"navigate_back":@"正在返回 FLEX 页面",@"dismiss_tool":@"正在关闭 FLEX 页面",@"build_project":@"正在本机构建",@"read_file":@"正在读取项目文件",@"list_artifacts":@"正在检查构建产物",@"list_session_files":@"正在读取会话文件"};
@@ -630,9 +742,11 @@ static NSString *DXChatContent(id content) {
  }];
 }
 - (void)mcpTapped {
- FLEXAiFlexSettingsViewController *controller=[FLEXAiFlexSettingsViewController new];
- UINavigationController *navigation=[[UINavigationController alloc]initWithRootViewController:controller];
- [self presentViewController:navigation animated:YES completion:nil];
+ // 服务开关、端口、令牌与授权组已经合并进 AiFlex2 主页，聊天页不再维护第二份入口：
+ // 直接退回面板，用户在「MCP 服务」卡里改，改完这里的状态跟着刷新。
+ UINavigationController *navigation=self.navigationController;
+ if(navigation.viewControllers.count>1){[navigation popToRootViewControllerAnimated:YES];return;}
+ [self dismissViewControllerAnimated:YES completion:nil];
 }
 - (void)permissionTapped {
  if(!self.csrf.length||!self.projectID.length){[self setStatus:@"请先连接 AiFlex2 并选择项目"];return;}
