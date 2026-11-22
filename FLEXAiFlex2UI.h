@@ -70,7 +70,24 @@ typedef NS_ENUM(NSInteger, AXAlertMessageStyle) {
     AXAlertMessageStyleCode          // 等宽、可选中复制（令牌/地址等值）
 };
 
+// 多输入框弹窗的字段类型：决定键盘与是否密文。
+typedef NS_ENUM(NSInteger, AXAlertFieldKind) {
+    AXAlertFieldKindText = 0,
+    AXAlertFieldKindSecure,
+    AXAlertFieldKindNumber,
+    AXAlertFieldKindURL
+};
+
 @class AXGlassAlert;
+
+@interface AXAlertField : NSObject
+@property (nonatomic, copy, readonly) NSString *placeholder;
+@property (nonatomic, copy, readonly, nullable) NSString *text;
+@property (nonatomic, assign, readonly) AXAlertFieldKind kind;
++ (instancetype)fieldWithPlaceholder:(NSString *)placeholder
+                                text:(nullable NSString *)text
+                                kind:(AXAlertFieldKind)kind;
+@end
 
 @interface AXAlertButton : NSObject
 @property (nonatomic, copy, readonly) NSString *title;
@@ -84,6 +101,7 @@ typedef NS_ENUM(NSInteger, AXAlertMessageStyle) {
 @interface AXGlassAlert : NSObject
 @property (nonatomic, strong, readonly, nullable) UITextField *textField; // 无输入框时为 nil
 @property (nonatomic, copy, readonly) NSString *text;                     // 输入框内容，无输入框为空串
+@property (nonatomic, copy, readonly) NSArray<NSString *> *values;         // 多输入框时按顺序取，单输入框为 @[text]
 - (void)dismiss;
 @end
 
@@ -94,6 +112,27 @@ FOUNDATION_EXPORT AXGlassAlert * _Nullable AXPresentAlert(UIViewController *host
                                                           AXAlertMessageStyle messageStyle,
                                                           void (^ _Nullable configureTextField)(UITextField *field),
                                                           NSArray<AXAlertButton *> *buttons);
+
+// 多输入框版本：字段顺序与 fields 一致，结果从 alert.values 取。
+FOUNDATION_EXPORT AXGlassAlert * _Nullable AXPresentForm(UIViewController *host,
+                                                         NSString * _Nullable title,
+                                                         NSString * _Nullable message,
+                                                         NSArray<AXAlertField *> *fields,
+                                                         NSArray<AXAlertButton *> *buttons);
+
+// 底部选择列表：替代 UIAlertControllerStyleActionSheet，条目多时自动滚动。
+@interface AXSheetItem : NSObject
+@property (nonatomic, copy, readonly) NSString *title;
+@property (nonatomic, copy, readonly, nullable) NSString *subtitle;
+@property (nonatomic, assign) BOOL selected;
++ (instancetype)itemWithTitle:(NSString *)title subtitle:(nullable NSString *)subtitle;
+@end
+
+FOUNDATION_EXPORT void AXPresentSheet(UIViewController *host,
+                                      NSString * _Nullable title,
+                                      NSString * _Nullable message,
+                                      NSArray<AXSheetItem *> *items,
+                                      void (^ _Nullable handler)(NSInteger index));
 
 // 当前是否有玻璃弹窗挡在最前面：AI 走界面自动化前要先让用户处理完。
 FOUNDATION_EXPORT BOOL AXGlassAlertVisible(void);
