@@ -14,43 +14,43 @@ NSString *const FLEXDylixConnectionDiagnosticKey = @"FLEXDylixConnectionDiagnost
 NSError *FLEXDylixConnectionError(NSString *host, NSUInteger port, NSString *path,
                                  NSString *stage, NSInteger posixCode, NSInteger httpStatus) {
     BOOL connecting = [stage isEqual:@"connect"] || [stage isEqual:@"socket"];
-    NSString *reason = @"Dylix 返回的响应格式不正确", *advice = @"确认访问地址属于 Dylix HTTP 远程服务，而非 WebDAV 端口，并更新两端版本。";
+    NSString *reason = @"AiFlex2 返回的响应格式不正确", *advice = @"确认访问地址属于 AiFlex2 HTTP 远程服务，而非 WebDAV 端口，并更新两端版本。";
     if (posixCode) {
         switch (posixCode) {
             case EACCES: case EPERM:
                 reason = @"系统策略拒绝了网络访问";
                 advice = @"检查被注入 App 的本地网络权限、VPN 和设备管理限制。此错误本身不能确定是哪项策略。"; break;
             case EHOSTUNREACH: case ENETUNREACH: case EADDRNOTAVAIL:
-                reason = @"无法到达 Dylix 的网络地址";
+                reason = @"无法到达 AiFlex2 的网络地址";
                 advice = @"确认两台设备在可互通的 Wi-Fi，重新复制手机当前地址；检查 VPN、访客网络和路由器设备隔离。"; break;
             case ECONNREFUSED:
                 reason = @"目标地址拒绝连接";
                 advice = @"确认手机远程服务显示运行中，IP 与 HTTP 端口和复制的地址完全一致；检查 VPN 或防火墙。"; break;
             case ETIMEDOUT: case EAGAIN:
-                reason = connecting ? @"连接 Dylix 超时" : @"等待 Dylix 响应超时";
+                reason = connecting ? @"连接 AiFlex2 超时" : @"等待 AiFlex2 响应超时";
                 advice = connecting ? @"检查手机服务状态、Wi-Fi 互通、VPN 与路由器设备隔离。" : @"连接已建立，但未在时限内完成响应；检查手机服务状态、锁屏及网络中断。"; break;
             case ECONNRESET: case EPIPE: case ENOTCONN:
-                reason = @"Dylix 连接中断"; advice = @"检查手机服务是否重启、锁屏或网络切换；配置已保留，可重试。"; break;
+                reason = @"AiFlex2 连接中断"; advice = @"检查手机服务是否重启、锁屏或网络切换；配置已保留，可重试。"; break;
             case EMFILE: case ENFILE: case ENOBUFS: case ENOMEM:
                 reason = @"无法分配网络连接资源"; advice = @"关闭不需要的任务，重新打开被注入 App 后重试。"; break;
             case EINVAL:
-                reason = @"连接地址或请求无效"; advice = @"粘贴 Dylix 复制的完整 HTTP IPv4 地址，包含实际端口。"; break;
+                reason = @"连接地址或请求无效"; advice = @"粘贴 AiFlex2 复制的完整 HTTP IPv4 地址，包含实际端口。"; break;
             default: reason = @"网络请求失败"; advice = @"复制诊断信息，根据失败阶段和系统错误码排查。"; break;
         }
     } else if (httpStatus) {
-        reason = [NSString stringWithFormat:@"Dylix 返回 HTTP %ld", (long)httpStatus];
+        reason = [NSString stringWithFormat:@"AiFlex2 返回 HTTP %ld", (long)httpStatus];
         if (httpStatus == 401) advice = @"网络已连通，保存的授权可能失效；重新输入当前授权码配对。";
         else if (httpStatus == 403) advice = @"网络已连通，请求被服务端权限或同源校验拒绝；确认使用手机复制的地址，重新配对。";
-        else if (httpStatus == 423) advice = @"手机已锁定；解锁运行 Dylix 的设备后重试。";
+        else if (httpStatus == 423) advice = @"手机已锁定；解锁运行 AiFlex2 的设备后重试。";
         else if (httpStatus == 429) advice = @"请求或配对尝试过于频繁，请稍后使用有效授权码重试。";
-        else if (httpStatus == 404 || (httpStatus >= 300 && httpStatus < 400)) advice = @"目标服务可达，但接口不匹配；确认是 Dylix HTTP 地址而非 WebDAV 或代理页面。未自动跟随重定向。";
-        else if (httpStatus >= 500) advice = @"手机端服务返回错误；检查 Dylix 服务日志后重试。";
-        else advice = @"网络已连通；检查授权码是否有效、两端版本和 Dylix 服务日志。";
+        else if (httpStatus == 404 || (httpStatus >= 300 && httpStatus < 400)) advice = @"目标服务可达，但接口不匹配；确认是 AiFlex2 HTTP 地址而非 WebDAV 或代理页面。未自动跟随重定向。";
+        else if (httpStatus >= 500) advice = @"手机端服务返回错误；检查 AiFlex2 服务日志后重试。";
+        else advice = @"网络已连通；检查授权码是否有效、两端版本和 AiFlex2 服务日志。";
     } else if ([stage isEqual:@"response_limit"]) {
-        reason = @"Dylix 响应超过当前会话读取上限";
+        reason = @"AiFlex2 响应超过当前会话读取上限";
         advice = @"请缩小本次会话或操作结果后重试。";
     } else if ([stage isEqual:@"read_incomplete"]) {
-        reason = @"Dylix 响应尚未接收完整，连接已关闭";
+        reason = @"AiFlex2 响应尚未接收完整，连接已关闭";
         advice = @"检查手机服务中断、VPN 或网络切换后重试。";
     }
     NSString *message = [NSString stringWithFormat:@"%@\n%@%@", reason, advice,
@@ -62,7 +62,7 @@ NSError *FLEXDylixConnectionError(NSString *host, NSUInteger port, NSString *pat
     NSDictionary *info = NSBundle.mainBundle.infoDictionary ?: @{};
     NSString *systemError = posixCode ? [NSString stringWithUTF8String:strerror((int)posixCode)] : @"无";
     NSString *diagnostic = [NSString stringWithFormat:
-        @"FLEX Dylix 连接诊断 · 1.0.3 / Build236\n时间：%@\n目标：%@\n接口：%@\n阶段：%@\nPOSIX：%ld (%@)\nHTTP：%ld\n宿主：%@\n宿主版本：%@ (%@)\n系统：%@\n宿主本地网络用途说明：%@\n%@\n\n排查：在运行 FLEX 的设备上用 Safari 打开上述目标地址。若也打不开，先检查手机服务、Wi-Fi、VPN 与设备隔离；若能打开但插件失败，再检查被注入 App 的本地网络权限和策略。权限说明存在与否不代表已获授权，本报告不能单独判断权限状态。\n不包含授权码、令牌、Cookie、会话正文。",
+        @"FLEX AiFlex2 连接诊断 · 1.0.3 / Build236\n时间：%@\n目标：%@\n接口：%@\n阶段：%@\nPOSIX：%ld (%@)\nHTTP：%ld\n宿主：%@\n宿主版本：%@ (%@)\n系统：%@\n宿主本地网络用途说明：%@\n%@\n\n排查：在运行 FLEX 的设备上用 Safari 打开上述目标地址。若也打不开，先检查手机服务、Wi-Fi、VPN 与设备隔离；若能打开但插件失败，再检查被注入 App 的本地网络权限和策略。权限说明存在与否不代表已获授权，本报告不能单独判断权限状态。\n不包含授权码、令牌、Cookie、会话正文。",
         NSDate.date, destination, [paths containsObject:path] ? path : @"其他接口", stage,
         (long)posixCode, systemError, (long)httpStatus, NSBundle.mainBundle.bundleIdentifier ?: @"未知",
         info[@"CFBundleShortVersionString"] ?: @"未知", info[@"CFBundleVersion"] ?: @"未知",
@@ -95,22 +95,33 @@ static NSError *DXHTTPError(NSString *host, NSUInteger port, NSString *path, NSI
     NSError *base=FLEXDylixConnectionError(host,port,path,@"http",0,status);
     id object=[NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
     id detail=[object isKindOfClass:NSDictionary.class]?object[@"error"]:nil;
+    // 工作区接口把业务错误放在 data.error 里（HTTP 400 + 一句中文原因），
+    // 顶层的 error 只承载协议级错误。两种都要读，否则用户只会看到“HTTP 400”，
+    // 还得自己去猜是令牌、路径还是任务冲突。
+    if(!detail&&[object isKindOfClass:NSDictionary.class]&&[object[@"data"] isKindOfClass:NSDictionary.class])
+        detail=object[@"data"][@"error"];
     id code=[detail isKindOfClass:NSDictionary.class]?detail[@"code"]:nil;
-    NSDictionary *known=@{@"invalid_code":@"配对码无效或已过期，请在手机 Dylix 重新获取当前授权码。网络已连通。",
+    NSString *serverMessage=[detail isKindOfClass:NSDictionary.class]?detail[@"message"]:([detail isKindOfClass:NSString.class]?detail:nil);
+    if(![serverMessage isKindOfClass:NSString.class]||!serverMessage.length)serverMessage=nil;
+    NSDictionary *known=@{@"invalid_code":@"配对码无效或已过期，请在手机 AiFlex2 重新获取当前授权码。网络已连通。",
         @"rate_limited":@"配对请求过多，请一分钟后再试。网络已连通。",
-        @"device_limit":@"已授权设备数量达到上限，请在 Dylix 管理已授权设备。网络已连通。",
-        @"workspace_required":@"此连接没有工作区权限，请在 Dylix 重新授权 FLEX 工作区。",
+        @"device_limit":@"已授权设备数量达到上限，请在 AiFlex2 管理已授权设备。网络已连通。",
+        @"workspace_required":@"此连接没有工作区权限，请在 AiFlex2 重新授权 FLEX 工作区。",
         @"csrf_rejected":@"请求确认信息已过期，请重新配对。网络已连通。",
-        @"origin_required":@"请求地址与 Dylix 监听地址不一致，请重新复制完整 HTTP 地址。网络已连通。",
+        @"origin_required":@"请求地址与 AiFlex2 监听地址不一致，请重新复制完整 HTTP 地址。网络已连通。",
         @"authentication_required":@"保存的授权无效或已过期，请重新配对。网络已连通。",
-        @"device_locked":@"Dylix 设备已锁定，请解锁后重试。",
-        @"storage_failed":@"Dylix 未能保存设备授权，请检查手机服务日志和可用存储。",
-        @"entropy_unavailable":@"Dylix 随机数服务暂未就绪，请重试。"};
+        @"device_locked":@"AiFlex2 设备已锁定，请解锁后重试。",
+        @"storage_failed":@"AiFlex2 未能保存设备授权，请检查手机服务日志和可用存储。",
+        @"entropy_unavailable":@"AiFlex2 随机数服务暂未就绪，请重试。",
+        @"invalid_flex_reply":@"FLEX 返回的内容无效或已过期，请重新查询后再试。"};
     NSString *message=[code isKindOfClass:NSString.class]?known[code]:nil;
+    NSString *decodedCode=[code isKindOfClass:NSString.class]?code:nil;
+    if(!message&&serverMessage.length){message=serverMessage;decodedCode=decodedCode?:@"server";}
     if(!message)return base;
     NSMutableDictionary *info=[base.userInfo mutableCopy];
-    info[NSLocalizedDescriptionKey]=[NSString stringWithFormat:@"%@ (HTTP %ld)",message,(long)status];
-    info[FLEXDylixConnectionDiagnosticKey]=[NSString stringWithFormat:@"%@\n服务端错误：%@\n%@",base.userInfo[FLEXDylixConnectionDiagnosticKey],code,message];
+    // 服务端已经给出了人话就原样展示；映射表里的固定文案才补上状态码，方便对照日志。
+    info[NSLocalizedDescriptionKey]=serverMessage.length&&!known[decodedCode]?message:[NSString stringWithFormat:@"%@ (HTTP %ld)",message,(long)status];
+    info[FLEXDylixConnectionDiagnosticKey]=[NSString stringWithFormat:@"%@\n服务端错误：%@\n%@",base.userInfo[FLEXDylixConnectionDiagnosticKey],decodedCode?:@"-",message];
     return [NSError errorWithDomain:base.domain code:base.code userInfo:info];
 }
 

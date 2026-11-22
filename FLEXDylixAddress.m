@@ -16,7 +16,7 @@ BOOL FLEXDylixParseAddress(NSString *raw, NSString **host, NSUInteger *port, NSS
         !parts.user.length && !parts.password.length && !parts.query.length && !parts.fragment.length &&
         (!parts.path.length || [parts.path isEqualToString:@"/"]);
     if (!valid) {
-        if (errorMessage) *errorMessage = @"请粘贴 Dylix 显示的完整局域网或本机 HTTP 地址（包含实际端口）";
+        if (errorMessage) *errorMessage = @"请粘贴 AiFlex2 显示的完整局域网或本机 HTTP 地址（包含实际端口）";
         return NO;
     }
     if (host) *host = address;

@@ -47,7 +47,7 @@
 }
 - (void)updateTitle:(NSString *)title detail:(NSString *)detail color:(UIColor *)color busy:(BOOL)busy {
  self.heading.text=title;self.detail.text=detail;self.dot.backgroundColor=color;self.spinner.color=color;
- self.capsule.accessibilityLabel=[NSString stringWithFormat:@"Dylix AI，%@，%@",title,detail];
+ self.capsule.accessibilityLabel=[NSString stringWithFormat:@"AiFlex2 AI，%@，%@",title,detail];
  if(busy&&!UIAccessibilityIsReduceMotionEnabled())[self.spinner startAnimating];else[self.spinner stopAnimating];
  [self clampToSafeArea];
 }

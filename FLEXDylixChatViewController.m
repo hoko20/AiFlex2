@@ -41,6 +41,16 @@ static NSString *FLEXDylixLocalIPv4(void) {
 }
 static NSDictionary *DXRememberedChat;
 static __weak FLEXDylixChatViewController *DXCurrentChat;
+// 用户消息在 App 侧会带上一大段 FLEX 现场上下文；插件里只显示用户真正问的那句。
+static NSString *DXChatUserText(NSString *text) {
+    if(!text.length)return @"";
+    NSRange marker=[text rangeOfString:@"\n\n我的问题：" options:NSBackwardsSearch];
+    if(marker.location!=NSNotFound&&[text hasPrefix:@"当前 FLEX 现场："])text=[text substringFromIndex:NSMaxRange(marker)];
+    NSRange next=[text rangeOfString:@"\n\n当前 FLEX 现场："];
+    if(next.location!=NSNotFound)text=[text substringToIndex:next.location];
+    return text;
+}
+
 static NSString *DXChatContent(id content) {
  if([content isKindOfClass:NSString.class])return content;
  if(![content isKindOfClass:NSArray.class])return @"";
@@ -58,6 +68,11 @@ static NSString *DXChatContent(id content) {
 // 但每次点进这个页面都会重新校验一次、干等一个超时，这里用来抑制重复空等。
 @property NSTimeInterval lastValidateFailure;
 - (void)rememberConnectionNow;
+- (NSMutableArray<NSMutableDictionary *> *)transcriptFrom:(NSArray *)raw;
+- (BOOL)applyTranscript:(NSArray *)raw;
+- (void)failPendingReply:(NSError *)error;
+- (void)finishReplyWithResult:(NSDictionary *)result;
+- (void)noteEmptyReply;
 - (void)nextPollIn:(NSTimeInterval)interval;
 - (void)buildNavigationItems;
 - (UIView *)buildHeader;
@@ -97,6 +112,9 @@ static NSString *DXChatContent(id content) {
 @property NSArray<NSDictionary *> *reasoningOptions;
 @property NSUInteger lastCaptureSequence;
 @property NSTimeInterval lastTaskUpdate;
+// AI 任务等待计时：用来在状态栏里说明“还在等模型”，并给卡死的任务一个上限。
+@property NSTimeInterval jobStartedAt;
+@property NSUInteger jobNoticeMinutes;
 // 轮询每秒都会带一次全文和状态：节流掉重复的 Markdown 重排、滚动和写盘。
 @property NSTimeInterval lastLiveRender;
 @property NSTimeInterval lastRemember;
@@ -169,8 +187,8 @@ static NSString *DXChatContent(id content) {
     self.restoringWorkspace=NO;
     if(readError){if(readError.code==404){self.sessionID=nil;self.sessionTitle=nil;[self.messages removeAllObjects];[self renderMessages];[self updateSessionButton];}[self setStatus:@"上次会话暂时无法读取，请在会话列表中检查；项目和模型未切换"];return;}
     if([record[@"title"] isKindOfClass:NSString.class])self.sessionTitle=record[@"title"];
-    [self.messages removeAllObjects];for(NSDictionary *item in record[@"messages"]){NSString *role=item[@"role"],*text=DXChatContent(item[@"content"]);if([@[@"user",@"assistant"] containsObject:role]&&text.length)[self.messages addObject:[@{@"role":role,@"text":text} mutableCopy]];}
-    [self renderMessages];[self updateSessionButton];[self setStatus:exists?@"已恢复上次项目、模型和会话":@"已恢复上次会话，请重新选择模型"];
+    if(![self applyTranscript:record[@"messages"]]){[self.messages removeAllObjects];[self renderMessages];}
+    [self updateSessionButton];[self setStatus:exists?@"已恢复上次项目、模型和会话":@"已恢复上次会话，请重新选择模型"];
    }];
   }];
  }];
@@ -484,12 +502,8 @@ static NSString *DXChatContent(id content) {
   if(error){[self showError:error];return;}
   if(![record[@"id"] isEqualToString:identifier]){[self showError:DXChatError(@"会话读取结果不匹配")];return;}
   [self saveDraft];self.captureStatus=nil;self.captureID=nil;self.lastCaptureSequence=0;self.sessionID=identifier;self.sessionTitle=title.length?title:record[@"title"];self.liveMessage=nil;self.liveHasContent=NO;[self.messages removeAllObjects];
-  for(id raw in record[@"messages"]){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *role=raw[@"role"];if(![@[@"user",@"assistant"] containsObject:role])continue;NSString *text=DXChatContent(raw[@"content"]);if(!text.length)continue;
-   if([role isEqualToString:@"user"]){NSRange old=[text rangeOfString:@"\n\n我的问题：" options:NSBackwardsSearch];if(old.location!=NSNotFound&&[text hasPrefix:@"当前 FLEX 现场："])text=[text substringFromIndex:NSMaxRange(old)];NSRange next=[text rangeOfString:@"\n\n当前 FLEX 现场："];if(next.location!=NSNotFound)text=[text substringToIndex:next.location];}
-   [self.messages addObject:[@{@"role":role,@"text":text} mutableCopy]];
-  }
-  if(!self.messages.count)[self.messages addObject:[@{@"role":@"tip",@"text":@"这个会话还没有可显示的文字消息。"} mutableCopy]];
-  [self renderMessages];[self restoreDraft];[self updateSessionButton];
+  if(![self applyTranscript:record[@"messages"]]){[self.messages addObject:[@{@"role":@"tip",@"text":@"这个会话还没有可显示的文字消息。"} mutableCopy]];[self renderMessages];}
+  [self restoreDraft];[self updateSessionButton];
   BOOL running=[@[@"streaming",@"running",@"waitingApproval"] containsObject:record[@"state"]];
   [self setStatus:running?@"会话正在 AiFlex2 运行，点会话可刷新":[NSString stringWithFormat:@"已打开会话 · %lu 条消息",(unsigned long)self.messages.count]];
   NSString *savedConnection=record[@"connectionID"],*savedModel=record[@"modelID"];
@@ -834,12 +848,26 @@ static NSString *DXChatContent(id content) {
  [self request:@"/api/v1/jobs/get" body:@{@"id":identifier} completion:^(NSDictionary *job,NSError *error){
   if(error){completion(nil,error);return;}
   BOOL current=[identifier isEqual:self.jobID];
+  if(current&&!self.jobStartedAt)self.jobStartedAt=NSProcessInfo.processInfo.systemUptime;
   if(current&&[job[@"sessionID"] isKindOfClass:NSString.class]){self.sessionID=job[@"sessionID"];[self rememberConnection];}
   if(current&&!self.agentStopped){[self updateTaskFromJob:job];if([job[@"text"] isKindOfClass:NSString.class])[self setLiveText:job[@"text"]];}
   NSString *state=job[@"state"];
-  if([state isEqual:@"completed"]){completion(job[@"result"]?:@{},nil);return;}
-  if([state isEqual:@"failed"]||[state isEqual:@"cancelled"]){completion(nil,DXChatError(job[@"error"]?:@"任务未完成"));return;}
+  if([state isEqual:@"completed"]){if(current){self.jobStartedAt=0;self.jobNoticeMinutes=0;}completion(job[@"result"]?:@{},nil);return;}
+  if([state isEqual:@"failed"]||[state isEqual:@"cancelled"]){if(current){self.jobStartedAt=0;self.jobNoticeMinutes=0;}completion(nil,DXChatError(job[@"error"]?:@"任务未完成"));return;}
   if([state isEqual:@"awaiting_confirmation"]){[self confirmJob:job completion:completion];return;}
+  // 模型端长时间不给内容时，状态栏要逐步说明在等什么，不能一直只写“AI 正在回复…”。
+  NSTimeInterval elapsed=current&&self.jobStartedAt>0?NSProcessInfo.processInfo.systemUptime-self.jobStartedAt:0;
+  if(current&&!self.localOperation.length&&!self.activeToolOperations.count){
+   NSUInteger minutes=(NSUInteger)(elapsed/60);
+   if(minutes>=1&&minutes!=self.jobNoticeMinutes){self.jobNoticeMinutes=minutes;[self setStatus:[NSString stringWithFormat:@"仍在等待模型返回 · 已 %lu 分钟",(unsigned long)minutes]];}
+  }
+  // 十五分钟没有任何结论就收手：卡死的任务继续等下去只会让插件一直转圈。
+  if(elapsed>900){
+   [self request:@"/api/v1/jobs/cancel" body:@{@"id":identifier} completion:^(NSDictionary *r,NSError *e){}];
+   self.jobStartedAt=0;self.jobNoticeMinutes=0;
+   completion(nil,DXChatError(@"等待超过 15 分钟仍未完成，已停止等待。可以重新发送或换一个模型"));
+   return;
+  }
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[self waitJob:identifier completion:completion];});
  }];
 }
@@ -960,6 +988,65 @@ static NSString *DXChatContent(id content) {
   });
  }];
 }
+// App 的会话记录是权威来源：插件只做过滤和上下文剥离，不再自己拼一份历史。
+- (NSMutableArray<NSMutableDictionary *> *)transcriptFrom:(NSArray *)raw {
+ NSMutableArray<NSMutableDictionary *> *list=[NSMutableArray new];
+ if(![raw isKindOfClass:NSArray.class])return list;
+ for(id item in raw){
+  if(![item isKindOfClass:NSDictionary.class])continue;
+  NSString *role=item[@"role"];if(![@[@"user",@"assistant"] containsObject:role])continue;
+  NSString *text=DXChatContent(item[@"content"]);if(!text.length)continue;
+  if([role isEqual:@"user"])text=DXChatUserText(text);
+  if(!text.length)continue;
+  [list addObject:[@{@"role":role,@"text":text} mutableCopy]];
+ }
+ return list;
+}
+- (BOOL)applyTranscript:(NSArray *)raw {
+ NSMutableArray *list=[self transcriptFrom:raw];
+ if(!list.count)return NO;
+ self.liveMessage=nil;self.liveHasContent=NO;[self.messages setArray:list];[self renderMessages];
+ return YES;
+}
+// 发送失败但 AI 一个字都没产出时，不要把错误塞进助手气泡——那看起来像 AI 的回答，
+// 也正是“显示完成却没有回复数据”的来源。改成一行系统提示，并收回空气泡。
+- (void)failPendingReply:(NSError *)error {
+ NSString *reason=error.localizedDescription?:@"请求失败";
+ NSMutableDictionary *live=self.liveMessage;
+ if(live&&!self.liveHasContent&&![live[@"text"] length]){
+  NSUInteger position=[self.messages indexOfObjectIdenticalTo:live];
+  if(position!=NSNotFound)[self.messages removeObjectAtIndex:position];
+  self.liveMessage=nil;[self renderMessages];
+  [self append:[@"消息没有发出 · " stringByAppendingString:reason]];
+  return;
+ }
+ [self setLiveText:reason];
+}
+// 任务结束但手上没有可显示的文字：先看任务结果，再回读 App 会话记录，最后给出明确结论。
+- (void)finishReplyWithResult:(NSDictionary *)result {
+ if(!self.liveHasContent){
+  NSArray *messages=[result[@"messages"] isKindOfClass:NSArray.class]?result[@"messages"]:nil;
+  for(NSDictionary *message in messages.reverseObjectEnumerator){
+   if(![message isKindOfClass:NSDictionary.class]||![message[@"role"] isEqual:@"assistant"])continue;
+   NSString *text=DXChatContent(message[@"content"]);if(text.length){[self setLiveText:text];break;}
+  }
+ }
+ if(self.liveHasContent){[self setStatus:@"回复完成"];return;}
+ NSString *sid=self.sessionID;NSUInteger generation=self.agentGeneration;
+ if(!sid.length){[self noteEmptyReply];return;}
+ [self setStatus:@"正在同步回复…"];
+ [self workspace:@"ai_read" arguments:@{@"sessionID":sid} completion:^(NSDictionary *record,NSError *error){
+  if(generation!=self.agentGeneration)return;
+  if(!error&&[self applyTranscript:record[@"messages"]]){[self setStatus:@"回复完成"];return;}
+  [self noteEmptyReply];
+ }];
+}
+- (void)noteEmptyReply {
+ NSString *text=@"模型这次没有返回可显示的文字，可能被上游中断了。可以发送「继续」重试，或在设置里换一个模型。";
+ // 没有活动气泡时（例如记录回读把消息整批替换掉了）就补一行系统提示，别让界面停在“正在回复…”。
+ if(self.liveMessage)[self setLiveText:text];else [self append:text];
+ [self setStatus:@"模型未返回内容"];
+}
 - (void)setLiveText:(NSString *)text {
  if(!self.liveMessage)return;
  NSString *value=text?:@"";
@@ -995,11 +1082,11 @@ static NSString *DXChatContent(id content) {
  NSDictionary *live=[self.runtime execute:@"current" arguments:@{} error:nil]?:@{};NSData *liveData=[NSJSONSerialization dataWithJSONObject:live options:0 error:nil];NSString *liveText=liveData?[[NSString alloc]initWithData:liveData encoding:NSUTF8StringEncoding]:@"";
  NSString *fullReport=[NSString stringWithFormat:@"%@\nCurrent FLEX runtime: %@",current?:@"",liveText?:@""];NSString *report=fullReport.length>16000?[fullReport substringToIndex:16000]:fullReport;
  NSString *liveClass=live[@"selectedObject"][@"class"]?:self.className;
- [self workspace:@"flex_publish" arguments:@{@"bundleID":bundle,@"className":liveClass?:@"未知对象",@"report":report,@"capabilities":@{@"protocolVersion":@2,@"touchGestures":@([[self.runtime execute:@"gesture_capabilities" arguments:@{} error:nil][@"available"] boolValue])}} completion:^(NSDictionary *published,NSError *error){if(generation!=self.agentGeneration){self.busy=NO;[self setStatus:@"任务已停止"];return;}if(error){self.busy=NO;self.sendButton.enabled=YES;[self setLiveText:error.localizedDescription];[self showError:error];return;}
+ [self workspace:@"flex_publish" arguments:@{@"bundleID":bundle,@"className":liveClass?:@"未知对象",@"report":report,@"capabilities":@{@"protocolVersion":@2,@"touchGestures":@([[self.runtime execute:@"gesture_capabilities" arguments:@{} error:nil][@"available"] boolValue])}} completion:^(NSDictionary *published,NSError *error){if(generation!=self.agentGeneration){self.busy=NO;[self setStatus:@"任务已停止"];return;}if(error){self.busy=NO;self.sendButton.enabled=YES;[self failPendingReply:error];[self showError:error];return;}
   NSString *contextualQuestion=[NSString stringWithFormat:@"%@\n\n当前 FLEX 现场：目标 App %@，当前选中对象 %@。你可以自主用 flex_live_read(current)、screen_elements 和 view_tree 探索整个当前页面，不必等用户先选视图；可用 hit_test 从窗口坐标定位对象。若当前模型已验证图片能力，且用户授权 FLEX 敏感读取，可用 flex_sensitive_read(capture_screen) 获取目标窗口截图；截图会作为下一轮真正的图片输入，不是 base64 文本。需要进入页面时，可请求 flex_control(activate_control) 激活可见 UIButton，或 scroll_view 滚动，均受 FLEX 控制授权约束；操作后重新观察页面。默认目标是在 AiFlex2 当前项目中编写持久插件功能，视图实例 ID 不是 Logos Hook 的类名或 selector。按需用 class_info、项目文件及已授权头文件核查类与方法；object_info 的 hookEvidence 提供祖先视图、nearest_responder_controller、稳定特征候选和生命周期方法声明位置。先读取目标按钮与业务祖先的 object_info，再用 class_info/class_header 核查；导航离开重进、滚动复用后重新截图和查询，比较 signature 与 instanceID。lifecycleExecutionObserved=false 表示没有调用轨迹，不能把声明当成实际执行；stabilityVerified=false 表示尚需你交叉验证。证据不足时说明缺口，不要编造 Hook。set_view 仅临时改变当前实例，不能代替插件代码；项目写入和构建仍走 AiFlex2 原有审批。",question,bundle,liveClass];
   contextualQuestion=[contextualQuestion stringByAppendingString:@"\n自主操作时先读取 tool_catalog 和 chat_status。需要操作目标 App 时调用 flex_control(minimize_chat, surface=target)，确认 chat_status.targetReady=true 后再触摸，会话与任务保持运行；需要操作 FLEX 功能页时用 open_tool 和返回目录中的 tool_id，随后用 flex_sensitive_read(flex_ui_state) 读取页面、用 set_search / flex_scroll / select_row 导航（仅 selectSupported=true 的行），最后可 restore_chat 恢复聊天。截图可指定 surface=flex 或 target。收起后有独立的 AI 状态悬浮球，显示连接、工具处理和回复状态，不暂停会话；用户可以点击悬浮球或 FLEX 菜单的 AiFlex2 AI 回到同一会话。状态球不是目标 App 控件，不要操作它。若工具报告停止，不可重试控制。目录标为不支持的入口不要声称已操作。需要自定义点击、双击、长按、滑动、拖动、双指缩放或旋转时，先读 gesture_capabilities；若可用，再在会话已收起到 target 后调用 flex_control(gesture)。这是投递真实触摸序列，返回 delivered 仅证明已投递，必须重新截图/读取现场确认业务效果。滚动返回 scrolled 表示实际位移；用 previousOffset、contentOffset、delta 与 reachedBoundary 区分移动和触及边界。xx.h 与反汇编入口为 extension.headers / extension.disassembly；class_header 可按行读取真实头文件。若候选 UIButton 无 controlActions，或 hit_test 命中其父容器，应继续检查交互父视图、手势及所属控制器，不能据此编写全局 UIButton Hook。用户要求的测试应逐项执行或明确阻塞原因，不得因为其他项目已通过就跳过可恢复的测试。独立测试构建前先确认 schema 能否选择隔离项目/配置；没有入口就先报告阻塞，不能只创建散落源码后当成构建准备完成，更不能改业务根配置。仅返回普通页面且实例相同，只能说明实例被保留，不能当作销毁重建或列表复用验证。截图像素尺寸可能经过压缩，触摸坐标以 screen_elements.windowBounds 为准。"];
   NSMutableDictionary *arguments=[@{@"text":contextualQuestion,@"connectionID":self.connectionID,@"model":self.modelID,@"mode":@"develop"} mutableCopy];if(self.sessionID.length)arguments[@"sessionID"]=self.sessionID;if(self.reasoningEffort.length)arguments[@"reasoningEffort"]=self.reasoningEffort;
-  [self setStatus:@"AI 正在回复…"];[self request:@"/api/v1/workspace" body:@{@"action":@"ai_send",@"projectID":self.projectID,@"arguments":arguments} completion:^(NSDictionary *job,NSError *failure){if(generation!=self.agentGeneration){self.busy=NO;if([job[@"id"] length])[self request:@"/api/v1/jobs/cancel" body:@{@"id":job[@"id"]} completion:^(NSDictionary *r,NSError *e){}];return;}if(failure){self.busy=NO;self.sendButton.enabled=YES;[self setLiveText:failure.localizedDescription];[self showError:failure];return;}self.jobID=job[@"id"];if([job[@"sessionID"] isKindOfClass:NSString.class])self.sessionID=job[@"sessionID"];[self waitJob:self.jobID completion:^(NSDictionary *result,NSError *endError){if(generation!=self.agentGeneration)return;self.busy=NO;self.sendButton.enabled=YES;self.jobID=nil;if(endError){[self setLiveText:endError.localizedDescription];[self setStatus:@"请求未完成"];return;}if([result[@"sessionID"] isKindOfClass:NSString.class]){self.sessionID=result[@"sessionID"];if(!self.sessionTitle.length){self.sessionTitle=question.length>30?[question substringToIndex:30]:question;[self updateSessionButton];}}[self setStatus:@"回复完成"];if(!self.liveHasContent){NSArray *messages=result[@"messages"];for(NSDictionary *message in messages.reverseObjectEnumerator)if([message[@"role"] isEqual:@"assistant"]){NSString *text=DXChatContent(message[@"content"]);if(text.length){[self setLiveText:text];break;}}}[self rememberConnection];}];}];
+  [self setStatus:@"AI 正在回复…"];[self request:@"/api/v1/workspace" body:@{@"action":@"ai_send",@"projectID":self.projectID,@"arguments":arguments} completion:^(NSDictionary *job,NSError *failure){if(generation!=self.agentGeneration){self.busy=NO;if([job[@"id"] length])[self request:@"/api/v1/jobs/cancel" body:@{@"id":job[@"id"]} completion:^(NSDictionary *r,NSError *e){}];return;}if(failure){self.busy=NO;self.sendButton.enabled=YES;[self failPendingReply:failure];[self showError:failure];return;}self.jobID=job[@"id"];self.jobStartedAt=NSProcessInfo.processInfo.systemUptime;self.jobNoticeMinutes=0;if([job[@"sessionID"] isKindOfClass:NSString.class])self.sessionID=job[@"sessionID"];[self waitJob:self.jobID completion:^(NSDictionary *result,NSError *endError){if(generation!=self.agentGeneration)return;self.busy=NO;self.sendButton.enabled=YES;self.jobID=nil;self.jobStartedAt=0;self.jobNoticeMinutes=0;if(endError){[self failPendingReply:endError];[self setStatus:[[endError.localizedDescription componentsSeparatedByString:@"\n"] firstObject]?:@"请求未完成"];return;}if([result[@"sessionID"] isKindOfClass:NSString.class]){self.sessionID=result[@"sessionID"];if(!self.sessionTitle.length){self.sessionTitle=question.length>30?[question substringToIndex:30]:question;[self updateSessionButton];}}[self finishReplyWithResult:result];[self rememberConnection];}];}];
  }];
 }
 - (void)dealloc {[NSNotificationCenter.defaultCenter removeObserver:self];[_agentTimer invalidate];_statusWindow.hidden=YES;}
