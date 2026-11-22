@@ -312,14 +312,14 @@ static NSString *DXChatContent(id content) {
 
  self.connectButton=[self iconButton:@"gearshape" action:@selector(connectTapped) label:@"连接设置"];
  self.permissionButton=[self iconButton:@"lock.shield" action:@selector(permissionTapped) label:@"工具权限"];
- UIButton *mcpButton=[self iconButton:@"network" action:@selector(mcpTapped) label:@"MCP 服务"];
- // 两个常驻开关放在地球（MCP）图标前面：不进会话弹窗也能提前打开，点亮即生效。
+ // 原来这里是 MCP（地球）图标，按需求换成「自动允许」：这个开关日常要随手开。
+ // MCP 入口改到齿轮（连接设置）里的「MCP 服务」一行，不会丢。
  self.autoApproveButton=[self iconButton:@"hand.raised" action:@selector(autoApproveTapped) label:@"自动允许 AI 操作"];
  self.autoApproveButton.accessibilityHint=@"点亮后 AI 的写入、构建、现场操作不再逐次弹窗确认";
  self.keepAwakeButton=[self iconButton:@"sun.max" action:@selector(keepAwakeTapped) label:@"任务期间保持常亮"];
  self.keepAwakeButton.accessibilityHint=@"点亮后会话页打开或 AI 执行任务时不会自动锁屏，收起且空闲后自动交还系统";
 
- UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,self.autoApproveButton,self.keepAwakeButton,mcpButton,self.permissionButton,self.connectButton]];
+ UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,self.autoApproveButton,self.keepAwakeButton,self.permissionButton,self.connectButton]];
  statusRow.axis=UILayoutConstraintAxisHorizontal;
  statusRow.spacing=6;
  statusRow.alignment=UIStackViewAlignmentCenter;
@@ -369,7 +369,6 @@ static NSString *DXChatContent(id content) {
   [self.permissionButton.widthAnchor constraintEqualToConstant:32],[self.permissionButton.heightAnchor constraintEqualToConstant:30],
   [self.autoApproveButton.widthAnchor constraintEqualToConstant:32],[self.autoApproveButton.heightAnchor constraintEqualToConstant:30],
   [self.keepAwakeButton.widthAnchor constraintEqualToConstant:32],[self.keepAwakeButton.heightAnchor constraintEqualToConstant:30],
-  [mcpButton.widthAnchor constraintEqualToConstant:32],[mcpButton.heightAnchor constraintEqualToConstant:30],
   [selectors.topAnchor constraintEqualToAnchor:statusRow.bottomAnchor constant:4],[selectors.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[selectors.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[selectors.heightAnchor constraintEqualToConstant:32],
   [metaRow.topAnchor constraintEqualToAnchor:selectors.bottomAnchor constant:4],[metaRow.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[metaRow.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[metaRow.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-10]
  ]];
@@ -969,19 +968,22 @@ static NSString *DXChatContent(id content) {
  [self updateToggleButtons];
  [self refreshAgentStatus];
 }
-// 点亮的按钮用蓝色描边+淡蓝底，和顶部其它灰色图标区分开；关掉就完全回到灰色。
+// 点亮的按钮用蓝色图标+淡蓝底；关闭时也留一层极淡的填充，保证在玻璃卡上看得见、点得到。
 - (void)styleToggleButton:(UIButton *)button on:(BOOL)on {
  button.tintColor=on?UIColor.systemBlueColor:UIColor.secondaryLabelColor;
- button.backgroundColor=on?[UIColor.systemBlueColor colorWithAlphaComponent:0.16]:UIColor.clearColor;
+ button.backgroundColor=on?[UIColor.systemBlueColor colorWithAlphaComponent:0.18]:UIColor.tertiarySystemFillColor;
  button.layer.cornerRadius=9;
+ button.layer.cornerCurve=kCACornerCurveContinuous;
  button.accessibilityValue=on?@"已开启":@"已关闭";
 }
 - (void)updateToggleButtons {
- UIImage *autoImage=[UIImage systemImageNamed:self.autoApprove?@"hand.raised.slash":@"hand.raised"];
- if(!autoImage)autoImage=[UIImage systemImageNamed:@"checkmark.circle"]; // 旧系统缺符号时留个可见的兜底
+ UIImageSymbolConfiguration *symbol=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+ UIImage *autoImage=[UIImage systemImageNamed:(self.autoApprove?@"hand.raised.slash":@"hand.raised") withConfiguration:symbol];
+ if(!autoImage)autoImage=[UIImage systemImageNamed:@"checkmark.circle" withConfiguration:symbol]; // 旧系统缺符号时留个可见的兜底
  [self.autoApproveButton setImage:autoImage forState:UIControlStateNormal];
  [self styleToggleButton:self.autoApproveButton on:self.autoApprove];
- [self.keepAwakeButton setImage:[UIImage systemImageNamed:self.keepAwake?@"sun.max.fill":@"sun.max"] forState:UIControlStateNormal];
+ UIImage *sunImage=[UIImage systemImageNamed:(self.keepAwake?@"sun.max.fill":@"sun.max") withConfiguration:symbol];
+ [self.keepAwakeButton setImage:sunImage forState:UIControlStateNormal];
  [self styleToggleButton:self.keepAwakeButton on:self.keepAwake];
 }
 - (BOOL)keepAwakeWanted {
@@ -1057,6 +1059,8 @@ static NSString *DXChatContent(id content) {
  NSMutableArray<AXAlertButton *> *actions=[NSMutableArray new];
  if(self.lastConnectionError.userInfo[FLEXDylixConnectionDiagnosticKey])[actions addObject:[AXAlertButton buttonWithTitle:@"上次连接诊断" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){[self showConnectionDiagnostic];}]];
  if(self.token.length)[actions addObject:[AXAlertButton buttonWithTitle:@"使用已保存连接" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){self.needsConnectionValidation=YES;self.lastValidateFailure=0;[self resumeSavedConnection];}]];
+ // 顶部不再放地球图标，MCP 的设置入口挪到这里，功能不缺失。
+ [actions addObject:[AXAlertButton buttonWithTitle:@"MCP 服务设置" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){[self mcpTapped];}]];
  [actions addObject:[AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]];
  [actions addObject:[AXAlertButton buttonWithTitle:@"连接" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert){
   NSArray<NSString *> *values=alert.values;
