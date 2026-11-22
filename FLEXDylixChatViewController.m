@@ -183,7 +183,7 @@ static NSString *DXChatContent(id content) {
   [self minimizeChat:NO completion:^{[FLEXManager.sharedManager dismissAnyPresentedTools:^{[FLEXManager.sharedManager presentEmbeddedTool:controller completion:^(UINavigationController *nav){done();}];}];}];return;
  }
  UIViewController *visible=[FLEXUtility topViewControllerInWindow:FLEXManager.sharedManager.explorerWindow];
- if([visible isKindOfClass:UIAlertController.class]){self.uiTransitioning=NO;completion(nil,@"请先人工处理当前弹窗");return;}
+ if([visible isKindOfClass:UIAlertController.class]||AXGlassAlertVisible()){self.uiTransitioning=NO;completion(nil,@"请先人工处理当前弹窗");return;}
  if([operation isEqual:@"navigate_back"]){
   UINavigationController *nav=visible.navigationController;
   if(nav.viewControllers.count<2){self.uiTransitioning=NO;completion(nil,@"当前 FLEX 页已经在导航根部");return;}
@@ -383,21 +383,21 @@ static NSString *DXChatContent(id content) {
 - (void)updateSessionButton {NSString *name=self.sessionTitle.length?self.sessionTitle:@"新会话";[self.sessionButton setTitle:[NSString stringWithFormat:@"会话 · %@  ▾",name] forState:UIControlStateNormal];}
 - (void)showConnectionDiagnostic {
  NSString *report=self.lastConnectionError.userInfo[FLEXDylixConnectionDiagnosticKey];if(!report.length)return;
- UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"连接诊断" message:report preferredStyle:UIAlertControllerStyleAlert];
- [alert addAction:[UIAlertAction actionWithTitle:@"复制诊断" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){UIPasteboard.generalPasteboard.string=report;[self setStatus:@"已复制连接诊断"]; }]];
- [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
- [self presentViewController:alert animated:YES completion:nil];
+ AXPresentAlert(self,@"连接诊断",report,AXAlertMessageStyleCode,nil,@[
+  [AXAlertButton buttonWithTitle:@"复制诊断" style:AXAlertButtonStyleSecondary handler:^(AXGlassAlert *alert){UIPasteboard.generalPasteboard.string=report;[self setStatus:@"已复制连接诊断"];}],
+  [AXAlertButton buttonWithTitle:@"关闭" style:AXAlertButtonStyleCancel handler:nil]
+ ]);
 }
 - (void)showError:(NSError *)error {
  if(!error)return;
  if(error.userInfo[FLEXDylixConnectionDiagnosticKey])self.lastConnectionError=error;
  [self setStatus:[[error.localizedDescription componentsSeparatedByString:@"\n"] firstObject]];
  if(!self.view.window){[self append:[@"错误：" stringByAppendingString:error.localizedDescription?:@"请求失败"]];return;}
- UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"AiFlex2 连接" message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
  NSString *report=error.userInfo[FLEXDylixConnectionDiagnosticKey];
- if(report.length)[alert addAction:[UIAlertAction actionWithTitle:@"复制诊断" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){UIPasteboard.generalPasteboard.string=report;[self setStatus:@"已复制连接诊断"]; }]];
- [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
- [self presentViewController:alert animated:YES completion:nil];
+ NSMutableArray<AXAlertButton *> *buttons=[NSMutableArray new];
+ if(report.length)[buttons addObject:[AXAlertButton buttonWithTitle:@"复制诊断" style:AXAlertButtonStyleSecondary handler:^(AXGlassAlert *alert){UIPasteboard.generalPasteboard.string=report;[self setStatus:@"已复制连接诊断"];}]];
+ [buttons addObject:[AXAlertButton buttonWithTitle:@"确定" style:AXAlertButtonStylePrimary handler:nil]];
+ AXPresentAlert(self,@"AiFlex2 连接",error.localizedDescription,AXAlertMessageStyleText,nil,buttons);
 }
 - (void)scrollMessagesToBottom { [self.messageScroll layoutIfNeeded];CGFloat offset=MAX(0,self.messageScroll.contentSize.height-self.messageScroll.bounds.size.height);[self.messageScroll setContentOffset:CGPointMake(0,offset) animated:NO]; }
 - (void)renderMessages {
@@ -477,19 +477,27 @@ static NSString *DXChatContent(id content) {
  NSString *project=self.projectID;[self setStatus:@"正在加载会话列表…"];
  [self workspace:@"ai_sessions" arguments:@{} completion:^(NSDictionary *data,NSError *error){
   if(![project isEqualToString:self.projectID])return;if(error){[self showError:error];return;}
-  UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"选择会话" message:self.projectName preferredStyle:UIAlertControllerStyleActionSheet];
-  [menu addAction:[UIAlertAction actionWithTitle:@"＋ 新会话" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self newSession];}]];
   NSArray *sessions=[data[@"sessions"] isKindOfClass:NSArray.class]?data[@"sessions"]:@[];NSDateFormatter *date=[NSDateFormatter new];date.dateFormat=@"M/d HH:mm";
+  NSMutableArray<AXSheetItem *> *items=[NSMutableArray new];NSMutableArray<NSString *> *identifiers=[NSMutableArray new];NSMutableArray<NSString *> *titles=[NSMutableArray new];
+  [items addObject:[AXSheetItem itemWithTitle:@"＋ 新会话" subtitle:nil]];
   for(id raw in sessions){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *sid=raw[@"id"];if(![sid isKindOfClass:NSString.class]||!sid.length)continue;NSString *title=[raw[@"title"] isKindOfClass:NSString.class]?raw[@"title"]:@"会话";NSString *summary=[raw[@"summary"] isKindOfClass:NSString.class]?raw[@"summary"]:@"";
    if([title hasPrefix:@"当前 FLEX 现场："]&&summary.length)title=summary;
    if(title.length>30)title=[[title substringToIndex:30] stringByAppendingString:@"…"];
    NSString *updated=[raw[@"updatedAt"] isKindOfClass:NSNumber.class]?[date stringFromDate:[NSDate dateWithTimeIntervalSince1970:[raw[@"updatedAt"] doubleValue]]]:@"";
-   NSString *label=[NSString stringWithFormat:@"%@%@%@",[sid isEqualToString:self.sessionID]?@"✓  ":@"",title,updated.length?[ @" · " stringByAppendingString:updated]:@""];
-   [menu addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self loadSessionID:sid title:title];}]];
+   AXSheetItem *item=[AXSheetItem itemWithTitle:title subtitle:updated.length?updated:nil];
+   item.selected=[sid isEqualToString:self.sessionID];
+   [items addObject:item];[identifiers addObject:sid];[titles addObject:title];
   }
-  if(!sessions.count)menu.message=@"当前项目暂无历史会话";
-  [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-  menu.popoverPresentationController.sourceView=self.sessionButton;menu.popoverPresentationController.sourceRect=self.sessionButton.bounds;[self presentViewController:menu animated:YES completion:nil];[self setStatus:@"选择现有会话或新建会话"];
+  NSString *message=self.projectName?:nil;
+  if(!sessions.count)message=@"当前项目暂无历史会话";
+  AXPresentSheet(self,@"选择会话",message,items,^(NSInteger index){
+   if(index<0)return;
+   if(index==0){[self newSession];return;}
+   NSUInteger position=(NSUInteger)(index-1);
+   if(position>=identifiers.count)return;
+   [self loadSessionID:identifiers[position] title:titles[position]];
+  });
+  [self setStatus:@"选择现有会话或新建会话"];
  }];
 }
 - (void)textViewDidChange:(UITextView *)textView {self.inputPlaceholder.hidden=textView.text.length>0;CGFloat height=MIN(150,MAX(44,[textView sizeThatFits:CGSizeMake(textView.bounds.size.width,CGFLOAT_MAX)].height));if(fabs(height-self.inputHeight.constant)>0.5)self.inputHeight.constant=height;}
@@ -581,20 +589,20 @@ static NSString *DXChatContent(id content) {
 - (void)disconnectTapped {
  if(self.busy){[self showError:DXChatError(@"AI 正在回复，请等本次请求结束后断开")];return;}
  if(!self.token.length){[self setStatus:@"尚未连接 AiFlex2"];return;}
- UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"断开 AiFlex2" message:@"清除保存的授权码和连接令牌，保留地址、项目、模型及会话选择。再次连接需要授权码。" preferredStyle:UIAlertControllerStyleAlert];
- [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
- [alert addAction:[UIAlertAction actionWithTitle:@"断开连接" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){
-  [self.agentTimer invalidate];self.agentTimer=nil;[self setStatus:@"正在断开 AiFlex2…"];
-  self.agentStopped=YES;
-  [self request:@"/api/v1/logout" body:@{} completion:^(NSDictionary *result,NSError *error){
-   NSError *storageError=nil;[FLEXDylixPreferences clearAuthorization:&storageError];
-   self.sessionLoadGeneration++;self.token=nil;self.csrf=nil;self.authorizationCode=nil;self.jobID=nil;self.needsConnectionValidation=NO;self.lastValidateFailure=0;
-   // 断开后那个浮窗已经没有存在意义，置空让 UIWindow 连同它的视图一起释放。
-   self.statusWindow.hidden=YES;self.statusWindow.windowScene=nil;self.statusWindow=nil;
-   self.missedHeartbeats=0;[self showConnectionState:0];[self rememberConnectionNow];[self setStatus:storageError?storageError.localizedDescription:@"已断开 AiFlex2，已保留项目和模型选择"];
-  }];
- }]];
- [self presentViewController:alert animated:YES completion:nil];
+ AXPresentAlert(self,@"断开 AiFlex2",@"清除保存的授权码和连接令牌，保留地址、项目、模型及会话选择。再次连接需要授权码。",AXAlertMessageStyleText,nil,@[
+  [AXAlertButton buttonWithTitle:@"断开连接" style:AXAlertButtonStyleDestructive handler:^(AXGlassAlert *alert){
+   [self.agentTimer invalidate];self.agentTimer=nil;[self setStatus:@"正在断开 AiFlex2…"];
+   self.agentStopped=YES;
+   [self request:@"/api/v1/logout" body:@{} completion:^(NSDictionary *result,NSError *error){
+    NSError *storageError=nil;[FLEXDylixPreferences clearAuthorization:&storageError];
+    self.sessionLoadGeneration++;self.token=nil;self.csrf=nil;self.authorizationCode=nil;self.jobID=nil;self.needsConnectionValidation=NO;self.lastValidateFailure=0;
+    // 断开后那个浮窗已经没有存在意义，置空让 UIWindow 连同它的视图一起释放。
+    self.statusWindow.hidden=YES;self.statusWindow.windowScene=nil;self.statusWindow=nil;
+    self.missedHeartbeats=0;[self showConnectionState:0];[self rememberConnectionNow];[self setStatus:storageError?storageError.localizedDescription:@"已断开 AiFlex2，已保留项目和模型选择"];
+   }];
+  }],
+  [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
+ ]);
 }
 - (void)viewDidAppear:(BOOL)animated {
  [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];
@@ -697,27 +705,12 @@ static NSString *DXChatContent(id content) {
   [self minimizeChat:NO completion:^{[FLEXManager.sharedManager dismissAnyPresentedTools:^{[FLEXManager.sharedManager presentEmbeddedTool:controller completion:^(UINavigationController *nav){[self completeWindowCommand:command error:nil];}];}];}];return;
  }
  UIViewController *visible=[FLEXUtility topViewControllerInWindow:FLEXManager.sharedManager.explorerWindow];
- if([visible isKindOfClass:UIAlertController.class]){[self completeWindowCommand:command error:@"请先人工处理当前弹窗"];return;}
+ if([visible isKindOfClass:UIAlertController.class]||AXGlassAlertVisible()){[self completeWindowCommand:command error:@"请先人工处理当前弹窗"];return;}
  if([operation isEqual:@"navigate_back"]){
   UINavigationController *nav=visible.navigationController;if(nav.viewControllers.count<2){[self completeWindowCommand:command error:@"当前 FLEX 页已经在导航根部"];return;}
   [nav popViewControllerAnimated:NO];[self completeWindowCommand:command error:nil];return;
  }
  [FLEXManager.sharedManager dismissAnyPresentedTools:^{[self completeWindowCommand:command error:nil];}];
-}
-- (UIViewController *)approvalPresenter {
- if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return nil;
- if(self.view.window&&!self.navigationController.isBeingDismissed)return self;
- UIWindow *flexWindow=FLEXManager.sharedManager.explorerWindow;
- UIViewController *presenter=!flexWindow.hidden?[FLEXUtility topViewControllerInWindow:flexWindow]:nil;
- if(!presenter){UIWindow *host=FLEXUtility.appKeyWindow;presenter=!host.hidden?[FLEXUtility topViewControllerInWindow:host]:nil;}
- if([presenter isKindOfClass:UIAlertController.class]||!presenter.view.window)return nil;
- return presenter;
-}
-- (void)presentApproval:(UIAlertController *)alert expiresAt:(NSTimeInterval)expiry onExpiry:(dispatch_block_t)onExpiry {
- if(!self.csrf.length||NSDate.date.timeIntervalSince1970>=expiry){onExpiry();return;}
- UIViewController *presenter=[self approvalPresenter];
- if(presenter){[presenter presentViewController:alert animated:YES completion:nil];return;}
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{[self presentApproval:alert expiresAt:expiry onExpiry:onExpiry];});
 }
 - (void)executeAgentCommand:(NSDictionary *)command {
  NSString *operation=command[@"operation"];
@@ -745,9 +738,12 @@ static NSString *DXChatContent(id content) {
   if(generation!=self.sessionLoadGeneration||![sid isEqual:self.sessionID]||![project isEqual:self.projectID])return;
   if(error){[self showError:error];return;}BOOL active=[state[@"enabled"] boolValue];
   if(!active){[self setSessionPermission:YES session:sid project:project];return;}
-  UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本会话 FLEX 总权限" message:@"已授权，没有时间限制。新会话需重新授权；断开设备或停止远程服务后授权结束。" preferredStyle:UIAlertControllerStyleActionSheet];
-  [menu addAction:[UIAlertAction actionWithTitle:@"撤销本会话授权" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){if([sid isEqual:self.sessionID]&&[project isEqual:self.projectID])[self setSessionPermission:NO session:sid project:project];}]];
-  [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];menu.popoverPresentationController.sourceView=self.permissionButton;menu.popoverPresentationController.sourceRect=self.permissionButton.bounds;[self presentViewController:menu animated:YES completion:nil];
+  AXSheetItem *revoke=[AXSheetItem itemWithTitle:@"撤销本会话授权" subtitle:nil];
+  revoke.destructive=YES;
+  AXPresentSheet(self,@"本会话 FLEX 总权限",@"已授权，没有时间限制。新会话需重新授权；断开设备或停止远程服务后授权结束。",@[revoke],^(NSInteger index){
+   if(index!=0)return;
+   if([sid isEqual:self.sessionID]&&[project isEqual:self.projectID])[self setSessionPermission:NO session:sid project:project];
+  });
  }];
 }
 - (void)setSessionPermission:(BOOL)enabled session:(NSString *)sid project:(NSString *)project {
@@ -807,20 +803,40 @@ static NSString *DXChatContent(id content) {
  NSString *identifier=job[@"id"],*nonce=job[@"nonce"];if(!identifier.length||!nonce.length){completion(nil,DXChatError(@"确认请求无效"));return;}
  NSTimeInterval expiry=[job[@"expiresAt"] isKindOfClass:NSNumber.class]?[job[@"expiresAt"] doubleValue]:0;
  if(expiry<=0)expiry=NSDate.date.timeIntervalSince1970+120;
- UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"确认 AiFlex2 操作" message:[@[job[@"confirmation"][@"summary"]?:@"AI 请求执行操作",job[@"confirmation"][@"details"]?:@""] componentsJoinedByString:@"\n\n"] preferredStyle:UIAlertControllerStyleAlert];
- for(NSNumber *choice in @[@NO,@YES]){BOOL accepted=choice.boolValue;[alert addAction:[UIAlertAction actionWithTitle:accepted?@"允许":@"拒绝" style:accepted?UIAlertActionStyleDefault:UIAlertActionStyleCancel handler:^(UIAlertAction *action){[self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":choice} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];}]];}[self presentApproval:alert expiresAt:expiry onExpiry:^{completion(nil,DXChatError(@"AiFlex2 操作确认已过期"));}];
+ if(!self.csrf.length||NSDate.date.timeIntervalSince1970>=expiry){completion(nil,DXChatError(@"AiFlex2 操作确认已过期"));return;}
+ __block BOOL settled=NO;
+ NSString *message=[@[job[@"confirmation"][@"summary"]?:@"AI 请求执行操作",job[@"confirmation"][@"details"]?:@""] componentsJoinedByString:@"\n\n"];
+ AXGlassAlert *alert=AXPresentAlert(self,@"确认 AiFlex2 操作",message,AXAlertMessageStyleText,nil,@[
+  [AXAlertButton buttonWithTitle:@"允许" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *action){
+   if(settled)return;settled=YES;
+   [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@YES} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
+  }],
+  [AXAlertButton buttonWithTitle:@"拒绝" style:AXAlertButtonStyleDestructive handler:^(AXGlassAlert *action){
+   if(settled)return;settled=YES;
+   [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@NO} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
+  }]
+ ]);
+ if(!alert){completion(nil,DXChatError(@"当前无法显示操作确认"));return;}
+ // 原生弹窗不会自己消失，超过服务端有效期还挂着只会让人以为没反应；这里到点自动收起。
+ NSTimeInterval delay=MAX(0,expiry-NSDate.date.timeIntervalSince1970);
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  if(settled)return;settled=YES;
+  [alert dismiss];
+  completion(nil,DXChatError(@"AiFlex2 操作确认已过期"));
+ });
 }
 - (void)connectTapped {
- UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"连接 AiFlex2 Remote" message:@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网远程」开启服务（同机可选“仅本机”），复制页面显示的完整地址，再输入页面上方的授权码。" preferredStyle:UIAlertControllerStyleAlert];
- [alert addTextFieldWithConfigurationHandler:^(UITextField *field){field.placeholder=@"粘贴 AiFlex2 复制的访问地址";if(self.host.length&&self.port)field.text=[NSString stringWithFormat:@"http://%@:%lu",self.host,(unsigned long)self.port];field.keyboardType=UIKeyboardTypeURL;field.autocapitalizationType=UITextAutocapitalizationTypeNone;field.autocorrectionType=UITextAutocorrectionTypeNo;}];
- [alert addTextFieldWithConfigurationHandler:^(UITextField *field){field.placeholder=@"授权码";field.text=self.authorizationCode;field.secureTextEntry=YES;field.keyboardType=UIKeyboardTypeNumberPad;}];
- if(self.lastConnectionError.userInfo[FLEXDylixConnectionDiagnosticKey])[alert addAction:[UIAlertAction actionWithTitle:@"上次连接诊断" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self showConnectionDiagnostic];}]];
- if(self.token.length)[alert addAction:[UIAlertAction actionWithTitle:@"使用已保存连接" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){self.needsConnectionValidation=YES;[self resumeSavedConnection];}]];
- [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
- [alert addAction:[UIAlertAction actionWithTitle:@"连接" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+ NSString *address=self.host.length&&self.port?[NSString stringWithFormat:@"http://%@:%lu",self.host,(unsigned long)self.port]:nil;
+ NSMutableArray<AXAlertButton *> *actions=[NSMutableArray new];
+ if(self.lastConnectionError.userInfo[FLEXDylixConnectionDiagnosticKey])[actions addObject:[AXAlertButton buttonWithTitle:@"上次连接诊断" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){[self showConnectionDiagnostic];}]];
+ if(self.token.length)[actions addObject:[AXAlertButton buttonWithTitle:@"使用已保存连接" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){self.needsConnectionValidation=YES;self.lastValidateFailure=0;[self resumeSavedConnection];}]];
+ [actions addObject:[AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]];
+ [actions addObject:[AXAlertButton buttonWithTitle:@"连接" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *alert){
+  NSArray<NSString *> *values=alert.values;
   NSString *host=nil,*message=nil;NSUInteger port=0;
-  if(!FLEXDylixParseAddress(alert.textFields[0].text,&host,&port,&message)){[self showError:DXChatError(message)];return;}
-  NSString *code=[alert.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];if(!code.length){[self showError:DXChatError(@"请输入授权码")];return;}
+  if(!FLEXDylixParseAddress(values.firstObject,&host,&port,&message)){[self showError:DXChatError(message)];return;}
+  NSString *rawCode=values.count>1?values[1]:@"";
+  NSString *code=[rawCode stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];if(!code.length){[self showError:DXChatError(@"请输入授权码")];return;}
   if(self.busy){[self setStatus:@"AI 正在执行，请结束任务后更换连接"];return;}
   BOOL changed=![self.host isEqual:host]||self.port!=port;self.sessionLoadGeneration++;self.host=host;self.port=port;self.authorizationCode=code;self.token=nil;self.csrf=nil;self.needsConnectionValidation=NO;self.restoringWorkspace=NO;self.missedHeartbeats=0;
   if(changed){self.projectID=nil;self.projectName=nil;self.connectionID=nil;self.modelID=nil;self.modelName=nil;self.sessionID=nil;self.sessionTitle=nil;[self.messages removeAllObjects];[self renderMessages];[self.projectButton setTitle:@"选择项目" forState:UIControlStateNormal];[self.modelButton setTitle:@"选择模型" forState:UIControlStateNormal];[self updateSessionButton];}
@@ -828,12 +844,29 @@ static NSString *DXChatContent(id content) {
   NSString *name=[NSString stringWithFormat:@"FLEX · %@",NSBundle.mainBundle.bundleIdentifier?:@"目标 App"];if(name.length>64)name=[name substringToIndex:64];[self setStatus:@"正在配对…"];
   [self request:@"/api/v1/pair" body:@{@"code":code,@"name":name,@"workspace":@YES} completion:^(NSDictionary *data,NSError *error){if(error){[self showConnectionState:3];[self showError:error];return;}[self request:@"/api/v1/status" body:@{} completion:^(NSDictionary *status,NSError *failure){if(failure){[self showConnectionState:3];[self showError:failure];return;}self.csrf=status[@"session"][@"csrf"];if(!self.csrf.length){[self showConnectionState:3];[self showError:DXChatError(@"配对后未取得请求校验值")];return;}[self showConnectionState:2];[self setStatus:@"配对完成"];[self startAgentPolling];if(self.projectID.length)[self restoreSavedWorkspace];else [self projectTapped];}];}];
  }]];
- [self presentViewController:alert animated:YES completion:nil];
+ AXPresentForm(self,@"连接 AiFlex2 Remote",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网远程」开启服务（同机可选“仅本机”），复制页面显示的完整地址，再输入页面上方的授权码。",@[
+  [AXAlertField fieldWithPlaceholder:@"粘贴 AiFlex2 复制的访问地址" text:address kind:AXAlertFieldKindURL],
+  [AXAlertField fieldWithPlaceholder:@"授权码" text:self.authorizationCode kind:AXAlertFieldKindSecure]
+ ],actions);
 }
 - (void)projectTapped {if(self.restoringWorkspace){[self setStatus:@"正在恢复上次项目和会话，请稍候"];return;}
  if(self.busy){[self setStatus:@"AI 正在回复，结束后可切换项目"];return;}
  if(!self.csrf.length){[self connectTapped];return;}
- [self workspace:@"projects" arguments:@{} completion:^(NSDictionary *data,NSError *error){if(error){[self showError:error];return;}NSArray *projects=data[@"projects"];UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"选择 AiFlex2 项目" message:@"AI 的文件和构建权限仍限定在所选项目" preferredStyle:UIAlertControllerStyleActionSheet];for(NSDictionary *project in projects){NSString *name=project[@"name"]?:project[@"id"];[menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){if(![self.projectID isEqual:project[@"id"]]){[self saveDraft];self.sessionLoadGeneration++;self.projectID=project[@"id"];self.projectName=name;self.sessionID=nil;self.sessionTitle=nil;self.reasoningEffort=nil;self.reasoningOptions=nil;self.liveMessage=nil;[self.messages removeAllObjects];[self addMessage:@"已切换项目。选择历史会话，或直接发送以创建新会话。" role:@"tip"];[self restoreDraft];[self updateSessionButton];}else self.projectName=name;[self.projectButton setTitle:name forState:UIControlStateNormal];[self rememberConnection];[self modelTapped];}]];}[menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];menu.popoverPresentationController.sourceView=self.projectButton;menu.popoverPresentationController.sourceRect=self.projectButton.bounds;[self presentViewController:menu animated:YES completion:nil];}];
+ [self workspace:@"projects" arguments:@{} completion:^(NSDictionary *data,NSError *error){
+  if(error){[self showError:error];return;}
+  NSArray *projects=[data[@"projects"] isKindOfClass:NSArray.class]?data[@"projects"]:@[];
+  NSMutableArray<AXSheetItem *> *items=[NSMutableArray new];
+  for(id raw in projects){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *name=raw[@"name"]?:raw[@"id"];if(![name isKindOfClass:NSString.class]||!name.length)continue;AXSheetItem *item=[AXSheetItem itemWithTitle:name subtitle:nil];item.selected=[self.projectID isEqual:raw[@"id"]];[items addObject:item];}
+  AXPresentSheet(self,@"选择 AiFlex2 项目",@"AI 的文件和构建权限仍限定在所选项目",items,^(NSInteger index){
+   if(index<0||index>=(NSInteger)items.count)return;
+   NSDictionary *project=nil;NSUInteger position=0;
+   for(id raw in projects){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *name=raw[@"name"]?:raw[@"id"];if(![name isKindOfClass:NSString.class]||!name.length)continue;if(position==(NSUInteger)index){project=raw;break;}position++;}
+   if(!project)return;
+   NSString *name=project[@"name"]?:project[@"id"];
+   if(![self.projectID isEqual:project[@"id"]]){[self saveDraft];self.sessionLoadGeneration++;self.projectID=project[@"id"];self.projectName=name;self.sessionID=nil;self.sessionTitle=nil;self.reasoningEffort=nil;self.reasoningOptions=nil;self.liveMessage=nil;[self.messages removeAllObjects];[self addMessage:@"已切换项目。选择历史会话，或直接发送以创建新会话。" role:@"tip"];[self restoreDraft];[self updateSessionButton];}else self.projectName=name;
+   [self.projectButton setTitle:name forState:UIControlStateNormal];[self rememberConnection];[self modelTapped];
+  });
+ }];
 }
 - (void)applyModelSelection:(NSDictionary *)connection {
  BOOL changed=![self.connectionID isEqual:connection[@"id"]]||![self.modelID isEqual:connection[@"model"]];
@@ -846,10 +879,15 @@ static NSString *DXChatContent(id content) {
 - (void)chooseReasoningForConnection:(NSDictionary *)connection {
  NSArray *options=connection[@"efforts"];if(![options isKindOfClass:NSArray.class]||options.count<2){[self setStatus:@"此模型未提供可调思考档位，将使用模型默认设置"];return;}
  NSString *project=[self.projectID copy],*cid=[self.connectionID copy],*model=[self.modelID copy];NSUInteger generation=self.sessionLoadGeneration;
- UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"深度思考" message:@"仅列出当前模型支持的档位。选择后下次发送生效；未在 FLEX 选择时沿用 AiFlex2 会话设置。" preferredStyle:UIAlertControllerStyleActionSheet];
- for(NSDictionary *option in options){NSString *value=option[@"id"];if(![value isKindOfClass:NSString.class])continue;NSString *name=option[@"name"]?:value;
- [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){if(self.busy||generation!=self.sessionLoadGeneration||![project isEqual:self.projectID]||![cid isEqual:self.connectionID]||![model isEqual:self.modelID])return;self.reasoningEffort=value;[self setStatus:[NSString stringWithFormat:@"深度思考：%@ · 下次发送生效",name]];}]];}
- [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];menu.popoverPresentationController.sourceView=self.modelButton;menu.popoverPresentationController.sourceRect=self.modelButton.bounds;[self presentViewController:menu animated:YES completion:nil];
+ NSMutableArray<AXSheetItem *> *items=[NSMutableArray new];NSMutableArray<NSDictionary *> *entries=[NSMutableArray new];
+ for(id raw in options){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *value=raw[@"id"];if(![value isKindOfClass:NSString.class]||!value.length)continue;NSString *name=raw[@"name"]?:value;AXSheetItem *item=[AXSheetItem itemWithTitle:name subtitle:nil];item.selected=[value isEqual:self.reasoningEffort];[items addObject:item];[entries addObject:raw];}
+ if(!items.count){[self setStatus:@"此模型未提供可调思考档位，将使用模型默认设置"];return;}
+ AXPresentSheet(self,@"深度思考",@"仅列出当前模型支持的档位。选择后下次发送生效；未在 FLEX 选择时沿用 AiFlex2 会话设置。",items,^(NSInteger index){
+  if(index<0||index>=(NSInteger)entries.count)return;
+  if(self.busy||generation!=self.sessionLoadGeneration||![project isEqual:self.projectID]||![cid isEqual:self.connectionID]||![model isEqual:self.modelID])return;
+  NSDictionary *option=entries[(NSUInteger)index];NSString *value=option[@"id"];NSString *name=option[@"name"]?:value;
+  self.reasoningEffort=value;[self setStatus:[NSString stringWithFormat:@"深度思考：%@ · 下次发送生效",name]];
+ });
 }
 - (void)modelTapped {if(self.restoringWorkspace){[self setStatus:@"正在恢复上次项目和会话，请稍候"];return;}
  if(self.busy){[self setStatus:@"AI 正在回复，结束后可切换模型"];return;}
@@ -858,11 +896,16 @@ static NSString *DXChatContent(id content) {
  [self workspace:@"ai_connections" arguments:@{} completion:^(NSDictionary *data,NSError *error){
   if(generation!=self.sessionLoadGeneration||![project isEqual:self.projectID]||self.busy)return;
   if(error){[self showError:error];return;}
-  UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"选择模型" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-  for(NSDictionary *connection in data[@"connections"]){NSString *name=[NSString stringWithFormat:@"%@ · %@",connection[@"provider"]?:@"",connection[@"model"]?:@""];
-   [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){if(generation==self.sessionLoadGeneration&&[project isEqual:self.projectID]&&!self.busy){[self applyModelSelection:connection];[self dismissViewControllerAnimated:YES completion:^{[self chooseReasoningForConnection:connection];}];}}]];
-  }
-  [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];menu.popoverPresentationController.sourceView=self.modelButton;menu.popoverPresentationController.sourceRect=self.modelButton.bounds;[self presentViewController:menu animated:YES completion:nil];
+  NSArray *connections=[data[@"connections"] isKindOfClass:NSArray.class]?data[@"connections"]:@[];
+  NSMutableArray<AXSheetItem *> *items=[NSMutableArray new];NSMutableArray<NSDictionary *> *entries=[NSMutableArray new];
+  for(id raw in connections){if(![raw isKindOfClass:NSDictionary.class])continue;NSString *name=[NSString stringWithFormat:@"%@ · %@",raw[@"provider"]?:@"",raw[@"model"]?:@""];AXSheetItem *item=[AXSheetItem itemWithTitle:name subtitle:nil];item.selected=[self.connectionID isEqual:raw[@"id"]]&&[self.modelID isEqual:raw[@"model"]];[items addObject:item];[entries addObject:raw];}
+  AXPresentSheet(self,@"选择模型",nil,items,^(NSInteger index){
+   if(index<0||index>=(NSInteger)entries.count)return;
+   if(generation!=self.sessionLoadGeneration||![project isEqual:self.projectID]||self.busy)return;
+   NSDictionary *connection=entries[(NSUInteger)index];
+   [self applyModelSelection:connection];
+   [self chooseReasoningForConnection:connection];
+  });
  }];
 }
 - (void)setLiveText:(NSString *)text {

@@ -477,12 +477,27 @@ void AXRestoreStatusBarStyle(void) {
 
 #pragma mark - 玻璃弹窗
 
-static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
+// 弹窗与底部列表共用一个可见栈：AI 走界面自动化前要能判断"用户还有没处理完的层"。
+static NSMutableArray *AXVisibleAlerts(void) {
     static NSMutableArray *alerts;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ alerts = [NSMutableArray new]; });
     return alerts;
 }
+
+@implementation AXAlertField
+
++ (instancetype)fieldWithPlaceholder:(NSString *)placeholder
+                                text:(NSString *)text
+                                kind:(AXAlertFieldKind)kind {
+    AXAlertField *field = [AXAlertField new];
+    field->_placeholder = [placeholder copy] ?: @"";
+    field->_text = [text copy];
+    field->_kind = kind;
+    return field;
+}
+
+@end
 
 @implementation AXAlertButton
 
@@ -502,9 +517,20 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
 @property (nonatomic, strong) UIView *overlay;
 @property (nonatomic, strong) AXGlassCard *card;
 @property (nonatomic, strong, nullable) UITextField *textField;
+@property (nonatomic, strong) NSArray<UITextField *> *fields;
 @property (nonatomic, strong) NSLayoutConstraint *centerConstraint;
 @property (nonatomic, copy) NSArray<AXAlertButton *> *buttons;
 @property (nonatomic, assign) BOOL dismissing;
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                 messageStyle:(AXAlertMessageStyle)messageStyle
+           configureTextField:(void (^)(UITextField *field))configureTextField
+                      buttons:(NSArray<AXAlertButton *> *)buttons;
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                 messageStyle:(AXAlertMessageStyle)messageStyle
+                        fields:(NSArray<AXAlertField *> *)fields
+                       buttons:(NSArray<AXAlertButton *> *)buttons;
 @end
 
 @implementation AXGlassAlert
@@ -514,6 +540,23 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
                  messageStyle:(AXAlertMessageStyle)messageStyle
            configureTextField:(void (^)(UITextField *field))configureTextField
                       buttons:(NSArray<AXAlertButton *> *)buttons {
+    NSArray<AXAlertField *> *fields = configureTextField
+        ? @[[AXAlertField fieldWithPlaceholder:@"" text:nil kind:AXAlertFieldKindText]]
+        : @[];
+    self = [self initWithTitle:title
+                       message:message
+                  messageStyle:messageStyle
+                        fields:fields
+                       buttons:buttons];
+    if (self && configureTextField && self.textField) configureTextField(self.textField);
+    return self;
+}
+
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                 messageStyle:(AXAlertMessageStyle)messageStyle
+                        fields:(NSArray<AXAlertField *> *)fields
+                       buttons:(NSArray<AXAlertButton *> *)buttons {
     self = [super init];
     if (!self) return nil;
     _buttons = [buttons copy] ?: @[];
@@ -586,6 +629,11 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
             code.layer.borderColor = [UIColor.separatorColor
                 resolvedColorWithTraitCollection:code.traitCollection].CGColor;
             [code.heightAnchor constraintGreaterThanOrEqualToConstant:52].active = YES;
+            // 诊断输出可能有几十行，不给上限会把卡片撑出屏幕；超过就由文字自己被裁，
+            // 需要全文时用弹窗里的「复制」按钮。
+            NSLayoutConstraint *codeCap = [code.heightAnchor constraintLessThanOrEqualToConstant:280];
+            codeCap.priority = 999;
+            codeCap.active = YES;
             [content addObject:code];
         } else {
             UILabel *label = [UILabel new];
@@ -598,27 +646,50 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
         }
     }
 
-    if (configureTextField) {
-        UITextField *field = [UITextField new];
-        field.translatesAutoresizingMaskIntoConstraints = NO;
-        field.font = [UIFont systemFontOfSize:15];
-        field.textColor = UIColor.labelColor;
-        field.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.07];
-        field.layer.cornerRadius = 13;
-        field.layer.cornerCurve = kCACornerCurveContinuous;
-        field.layer.borderWidth = 0.5;
-        field.layer.borderColor = [UIColor.separatorColor
-            resolvedColorWithTraitCollection:field.traitCollection].CGColor;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-        field.returnKeyType = UIReturnKeyDone;
-        field.delegate = self;
-        UIView *pad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 13, 44)];
-        field.leftView = pad;
-        field.leftViewMode = UITextFieldViewModeAlways;
-        [field.heightAnchor constraintEqualToConstant:46].active = YES;
-        configureTextField(field);
-        _textField = field;
-        [content addObject:field];
+    if (fields.count) {
+        NSMutableArray<UITextField *> *built = [NSMutableArray new];
+        for (AXAlertField *spec in fields) {
+            UITextField *field = [UITextField new];
+            field.translatesAutoresizingMaskIntoConstraints = NO;
+            field.font = [UIFont systemFontOfSize:15];
+            field.textColor = UIColor.labelColor;
+            field.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.07];
+            field.layer.cornerRadius = 13;
+            field.layer.cornerCurve = kCACornerCurveContinuous;
+            field.layer.borderWidth = 0.5;
+            field.layer.borderColor = [UIColor.separatorColor
+                resolvedColorWithTraitCollection:field.traitCollection].CGColor;
+            field.clearButtonMode = UITextFieldViewModeWhileEditing;
+            field.delegate = self;
+            field.placeholder = spec.placeholder;
+            if (spec.text.length) field.text = spec.text;
+            switch (spec.kind) {
+                case AXAlertFieldKindSecure:
+                    field.secureTextEntry = YES;
+                    field.keyboardType = UIKeyboardTypeNumberPad;
+                    field.clearButtonMode = UITextFieldViewModeNever;
+                    break;
+                case AXAlertFieldKindURL:
+                    field.keyboardType = UIKeyboardTypeURL;
+                    field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+                    field.autocorrectionType = UITextAutocorrectionTypeNo;
+                    break;
+                case AXAlertFieldKindNumber:
+                    field.keyboardType = UIKeyboardTypeNumberPad;
+                    break;
+                case AXAlertFieldKindText:
+                    break;
+            }
+            field.returnKeyType = (built.count + 1 < fields.count) ? UIReturnKeyNext : UIReturnKeyDone;
+            UIView *pad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 13, 44)];
+            field.leftView = pad;
+            field.leftViewMode = UITextFieldViewModeAlways;
+            [field.heightAnchor constraintEqualToConstant:46].active = YES;
+            [built addObject:field];
+            [content addObject:field];
+        }
+        _fields = built.copy;
+        _textField = built.firstObject;
     }
 
     if (_buttons.count) {
@@ -745,6 +816,12 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
     return self.textField.text ?: @"";
 }
 
+- (NSArray<NSString *> *)values {
+    NSMutableArray<NSString *> *list = [NSMutableArray arrayWithCapacity:self.fields.count];
+    for (UITextField *field in self.fields) [list addObject:field.text ?: @""];
+    return list;
+}
+
 - (void)present {
     UIWindow *window = self.overlay.superview.window ?: self.card.window;
     if (!window) return;
@@ -794,7 +871,12 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
-    // 回车等同主操作，少一次点击。
+    // 多输入框时回车跳下一框，最后一框才等同主操作，少一次点击。
+    NSUInteger index = [self.fields indexOfObjectIdenticalTo:textField];
+    if (index != NSNotFound && index + 1 < self.fields.count) {
+        [self.fields[index + 1] becomeFirstResponder];
+        return YES;
+    }
     for (AXAlertButton *action in self.buttons) {
         if (action.style != AXAlertButtonStylePrimary) continue;
         [self fireAction:action];
@@ -805,20 +887,11 @@ static NSMutableArray<AXGlassAlert *> *AXVisibleAlerts(void) {
 
 @end
 
-AXGlassAlert *AXPresentAlert(UIViewController *host,
-                             NSString *title,
-                             NSString *message,
-                             AXAlertMessageStyle messageStyle,
-                             void (^configureTextField)(UITextField *),
-                             NSArray<AXAlertButton *> *buttons) {
+static AXGlassAlert *AXInstallAlert(UIViewController *host, AXGlassAlert *alert) {
+    if (!alert) return nil;
     UIView *hostView = host.viewIfLoaded ?: host.view;
     UIWindow *window = hostView.window ?: UIApplication.sharedApplication.keyWindow;
     if (!window) return nil;
-    AXGlassAlert *alert = [[AXGlassAlert alloc] initWithTitle:title
-                                                      message:message
-                                                 messageStyle:messageStyle
-                                           configureTextField:configureTextField
-                                                      buttons:buttons];
     [window addSubview:alert.overlay];
     [NSLayoutConstraint activateConstraints:@[
         [alert.overlay.topAnchor constraintEqualToAnchor:window.topAnchor],
@@ -828,6 +901,300 @@ AXGlassAlert *AXPresentAlert(UIViewController *host,
     ]];
     [alert present];
     return alert;
+}
+
+AXGlassAlert *AXPresentAlert(UIViewController *host,
+                             NSString *title,
+                             NSString *message,
+                             AXAlertMessageStyle messageStyle,
+                             void (^configureTextField)(UITextField *),
+                             NSArray<AXAlertButton *> *buttons) {
+    return AXInstallAlert(host, [[AXGlassAlert alloc] initWithTitle:title
+                                                           message:message
+                                                      messageStyle:messageStyle
+                                                configureTextField:configureTextField
+                                                           buttons:buttons]);
+}
+
+AXGlassAlert *AXPresentForm(UIViewController *host,
+                            NSString *title,
+                            NSString *message,
+                            NSArray<AXAlertField *> *fields,
+                            NSArray<AXAlertButton *> *buttons) {
+    return AXInstallAlert(host, [[AXGlassAlert alloc] initWithTitle:title
+                                                           message:message
+                                                      messageStyle:AXAlertMessageStyleText
+                                                            fields:fields
+                                                           buttons:buttons]);
+}
+
+#pragma mark - 底部选择列表
+
+@implementation AXSheetItem
+
++ (instancetype)itemWithTitle:(NSString *)title subtitle:(NSString *)subtitle {
+    AXSheetItem *item = [AXSheetItem new];
+    item->_title = [title copy] ?: @"";
+    item->_subtitle = [subtitle copy];
+    return item;
+}
+
+@end
+
+@interface AXGlassSheet : NSObject
+@property (nonatomic, strong) UIView *overlay;
+@property (nonatomic, strong) AXGlassCard *card;
+@property (nonatomic, copy) NSArray<AXSheetItem *> *items;
+@property (nonatomic, copy, nullable) void (^handler)(NSInteger index);
+@property (nonatomic, assign) BOOL dismissing;
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                        items:(NSArray<AXSheetItem *> *)items
+                      handler:(void (^)(NSInteger))handler;
+- (void)present;
+- (void)closeWithIndex:(NSInteger)index;
+- (UIView *)separatorLine;
+- (UIControl *)rowForItem:(AXSheetItem *)item index:(NSUInteger)index;
+- (void)backdropTapped;
+- (void)cancelTapped;
+- (void)rowTapped:(UIControl *)sender;
+- (void)rowPressed:(UIControl *)sender;
+- (void)rowReleased:(UIControl *)sender;
+@end
+
+@implementation AXGlassSheet
+
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                        items:(NSArray<AXSheetItem *> *)items
+                      handler:(void (^)(NSInteger))handler {
+    self = [super init];
+    if (!self) return nil;
+    _items = [items copy] ?: @[];
+    _handler = [handler copy];
+
+    _overlay = [UIView new];
+    _overlay.translatesAutoresizingMaskIntoConstraints = NO;
+    _overlay.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.34];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                         action:@selector(backdropTapped)];
+    [_overlay addGestureRecognizer:tap];
+
+    AXGradientView *bloom = [AXGradientView new];
+    bloom.colors = @[
+        (__bridge id)[[UIColor systemBlueColor] colorWithAlphaComponent:0.16].CGColor,
+        (__bridge id)([UIColor clearColor].CGColor)
+    ];
+    bloom.gradientStart = CGPointMake(0.2, 0.1);
+    bloom.gradientEnd = CGPointMake(0.8, 0.9);
+    [_overlay addSubview:bloom];
+    [NSLayoutConstraint activateConstraints:@[
+        [bloom.topAnchor constraintEqualToAnchor:_overlay.topAnchor],
+        [bloom.leadingAnchor constraintEqualToAnchor:_overlay.leadingAnchor],
+        [bloom.trailingAnchor constraintEqualToAnchor:_overlay.trailingAnchor],
+        [bloom.bottomAnchor constraintEqualToAnchor:_overlay.bottomAnchor]
+    ]];
+
+    _card = [[AXGlassCard alloc] initWithRadius:26];
+    [_overlay addSubview:_card];
+    [NSLayoutConstraint activateConstraints:@[
+        [_card.leadingAnchor constraintEqualToAnchor:_overlay.leadingAnchor constant:10],
+        [_card.trailingAnchor constraintEqualToAnchor:_overlay.trailingAnchor constant:-10],
+        [_card.bottomAnchor constraintEqualToAnchor:_overlay.safeAreaLayoutGuide.bottomAnchor constant:-8],
+        [_card.topAnchor constraintGreaterThanOrEqualToAnchor:_overlay.topAnchor constant:60]
+    ]];
+
+    NSMutableArray<UIView *> *content = [NSMutableArray new];
+    if (title.length) {
+        UILabel *label = [UILabel new];
+        label.text = title;
+        label.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        label.textColor = UIColor.labelColor;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.numberOfLines = 0;
+        [content addObject:label];
+    }
+    if (message.length) {
+        UILabel *label = [UILabel new];
+        label.text = message;
+        label.font = [UIFont systemFontOfSize:12.5];
+        label.textColor = UIColor.secondaryLabelColor;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.numberOfLines = 0;
+        [content addObject:label];
+    }
+
+    UIStackView *rows = [UIStackView new];
+    rows.axis = UILayoutConstraintAxisVertical;
+    rows.spacing = 0;
+    rows.alignment = UIStackViewAlignmentFill;
+    for (NSUInteger index = 0; index < _items.count; index++) {
+        if (index) [rows addArrangedSubview:[self separatorLine]];
+        [rows addArrangedSubview:[self rowForItem:_items[index] index:index]];
+    }
+
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.showsVerticalScrollIndicator = YES;
+    scroll.alwaysBounceVertical = NO;
+    [scroll addSubview:rows];
+    rows.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [rows.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [rows.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [rows.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [rows.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [rows.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+        [scroll.heightAnchor constraintLessThanOrEqualToAnchor:_overlay.heightAnchor multiplier:0.55]
+    ]];
+    [content addObject:scroll];
+
+    UIButton *cancel = [UIButton buttonWithType:UIButtonTypeCustom];
+    cancel.translatesAutoresizingMaskIntoConstraints = NO;
+    cancel.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.07];
+    cancel.layer.cornerRadius = 14;
+    cancel.layer.cornerCurve = kCACornerCurveContinuous;
+    cancel.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    [cancel setTitle:@"取消" forState:UIControlStateNormal];
+    [cancel setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
+    [cancel addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
+    [cancel.heightAnchor constraintEqualToConstant:48].active = YES;
+    [content addObject:cancel];
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:content];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 12;
+    stack.alignment = UIStackViewAlignmentFill;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [_card addSubview:stack];
+    if (content.count > 1) [stack setCustomSpacing:16 afterView:content[content.count - 2]];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:_card.topAnchor constant:18],
+        [stack.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor constant:14],
+        [stack.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor constant:-14],
+        [stack.bottomAnchor constraintEqualToAnchor:_card.bottomAnchor constant:-14]
+    ]];
+    return self;
+}
+
+- (UIView *)separatorLine {
+    UIView *line = [UIView new];
+    line.translatesAutoresizingMaskIntoConstraints = NO;
+    line.backgroundColor = [UIColor.separatorColor colorWithAlphaComponent:0.4];
+    [line.heightAnchor constraintEqualToConstant:0.5].active = YES;
+    return line;
+}
+
+- (UIControl *)rowForItem:(AXSheetItem *)item index:(NSUInteger)index {
+    UIControl *row = [UIControl new];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.tag = (NSInteger)index;
+    [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [row addTarget:self action:@selector(rowPressed:) forControlEvents:UIControlEventTouchDown];
+    [row addTarget:self action:@selector(rowReleased:) forControlEvents:
+        UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+
+    UILabel *title = [UILabel new];
+    title.text = item.title;
+    title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    title.textColor = item.destructive ? UIColor.systemRedColor : UIColor.labelColor;
+    title.lineBreakMode = NSLineBreakByTruncatingTail;
+
+    NSMutableArray<UIView *> *lines = [NSMutableArray arrayWithObject:title];
+    if (item.subtitle.length) {
+        UILabel *subtitle = [UILabel new];
+        subtitle.text = item.subtitle;
+        subtitle.font = [UIFont systemFontOfSize:11.5];
+        subtitle.textColor = UIColor.secondaryLabelColor;
+        subtitle.lineBreakMode = NSLineBreakByTruncatingTail;
+        [lines addObject:subtitle];
+    }
+    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:lines];
+    texts.axis = UILayoutConstraintAxisVertical;
+    texts.spacing = 2;
+    texts.alignment = UIStackViewAlignmentLeading;
+    texts.translatesAutoresizingMaskIntoConstraints = NO;
+    texts.userInteractionEnabled = NO;
+    [row addSubview:texts];
+
+    UIImageView *check = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark"
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13
+                                                                        weight:UIImageSymbolWeightSemibold]]];
+    check.tintColor = UIColor.systemBlueColor;
+    check.hidden = !item.selected;
+    check.translatesAutoresizingMaskIntoConstraints = NO;
+    [row addSubview:check];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:52],
+        [texts.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:14],
+        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:check.leadingAnchor constant:-10],
+        [texts.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [texts.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:11],
+        [check.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-14],
+        [check.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [check.widthAnchor constraintEqualToConstant:18]
+    ]];
+    return row;
+}
+
+- (void)present {
+    [AXVisibleAlerts() addObject:self];
+    self.overlay.alpha = 0;
+    self.card.transform = CGAffineTransformMakeTranslation(0, 44);
+    [UIView animateWithDuration:0.26 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.overlay.alpha = 1;
+        self.card.transform = CGAffineTransformIdentity;
+    } completion:nil];
+}
+
+- (void)backdropTapped { [self closeWithIndex:-1]; }
+- (void)cancelTapped { [self closeWithIndex:-1]; }
+- (void)rowTapped:(UIControl *)sender { [self closeWithIndex:sender.tag]; }
+- (void)rowPressed:(UIControl *)sender {
+    sender.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.06];
+}
+- (void)rowReleased:(UIControl *)sender { sender.backgroundColor = UIColor.clearColor; }
+
+- (void)closeWithIndex:(NSInteger)index {
+    if (self.dismissing) return;
+    self.dismissing = YES;
+    [AXVisibleAlerts() removeObjectIdenticalTo:self];
+    void (^handler)(NSInteger) = self.handler;
+    UIView *overlay = self.overlay;    [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+        overlay.alpha = 0;
+        self.card.transform = CGAffineTransformMakeTranslation(0, 30);
+    } completion:^(BOOL finished) {
+        [overlay removeFromSuperview];
+    }];
+    if (handler) handler(index);
+}
+
+@end
+
+void AXPresentSheet(UIViewController *host,
+                    NSString *title,
+                    NSString *message,
+                    NSArray<AXSheetItem *> *items,
+                    void (^handler)(NSInteger)) {
+    UIView *hostView = host.viewIfLoaded ?: host.view;
+    UIWindow *window = hostView.window ?: UIApplication.sharedApplication.keyWindow;
+    if (!window || (!items.count && !title.length)) {
+        if (handler) handler(-1);
+        return;
+    }
+    AXGlassSheet *sheet = [[AXGlassSheet alloc] initWithTitle:title
+                                                      message:message
+                                                        items:items
+                                                      handler:handler];
+    [window addSubview:sheet.overlay];
+    [NSLayoutConstraint activateConstraints:@[
+        [sheet.overlay.topAnchor constraintEqualToAnchor:window.topAnchor],
+        [sheet.overlay.leadingAnchor constraintEqualToAnchor:window.leadingAnchor],
+        [sheet.overlay.trailingAnchor constraintEqualToAnchor:window.trailingAnchor],
+        [sheet.overlay.bottomAnchor constraintEqualToAnchor:window.bottomAnchor]
+    ]];
+    [sheet present];
 }
 
 BOOL AXGlassAlertVisible(void) {
