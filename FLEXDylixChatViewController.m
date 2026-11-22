@@ -316,8 +316,8 @@ static NSString *DXChatContent(id content) {
  // 两个常驻开关放在地球（MCP）图标前面：不进会话弹窗也能提前打开，点亮即生效。
  self.autoApproveButton=[self iconButton:@"hand.raised" action:@selector(autoApproveTapped) label:@"自动允许 AI 操作"];
  self.autoApproveButton.accessibilityHint=@"点亮后 AI 的写入、构建、现场操作不再逐次弹窗确认";
- self.keepAwakeButton=[self iconButton:@"sun.max" action:@selector(keepAwakeTapped) label:@"屏幕常亮"];
- self.keepAwakeButton.accessibilityHint=@"点亮后本机不会自动锁屏，避免长任务被系统挂起";
+ self.keepAwakeButton=[self iconButton:@"sun.max" action:@selector(keepAwakeTapped) label:@"任务期间保持常亮"];
+ self.keepAwakeButton.accessibilityHint=@"点亮后会话页打开或 AI 执行任务时不会自动锁屏，收起且空闲后自动交还系统";
 
  UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,self.autoApproveButton,self.keepAwakeButton,mcpButton,self.permissionButton,self.connectButton]];
  statusRow.axis=UILayoutConstraintAxisHorizontal;
@@ -592,6 +592,8 @@ static NSString *DXChatContent(id content) {
  return [@[@"gesture",@"activate_control",@"scroll_view",@"set_view",@"undo",@"input_text",@"set_control_value",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"flex_scroll",@"set_search"] containsObject:operation];
 }
 - (void)refreshAgentStatus {
+ // 任务开始/结束、页面进出都会走到这里，顺带按“是否需要常亮”更新系统定时器。
+ [self updateIdleTimer];
  // 只要会话不在屏幕上（收起、被 FLEX 其它页面顶掉、或整个 FLEX 面板关掉），
  // 已连接就应该有这个悬浮球；之前只认 chatMinimized，从别处关掉面板就再也看不到它。
  BOOL chatVisible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!FLEXManager.sharedManager.explorerWindow.isHidden&&!self.navigationController.isBeingDismissed;
@@ -757,6 +759,8 @@ static NSString *DXChatContent(id content) {
   // 已经被 pop 出栈，这层导航不再代表会话，留着会让悬浮球恢复出一个空面板。
   self.chatNavigation=nil;
  }
+ // 页面已经离开，若手上也没有在跑的任务，就把常亮交还系统。
+ [self updateIdleTimer];
 }
 - (void)startAgentPolling {
  if(self.agentTimer||!self.csrf.length||self.needsConnectionValidation)return;
@@ -980,9 +984,19 @@ static NSString *DXChatContent(id content) {
  [self.keepAwakeButton setImage:[UIImage systemImageNamed:self.keepAwake?@"sun.max.fill":@"sun.max"] forState:UIControlStateNormal];
  [self styleToggleButton:self.keepAwakeButton on:self.keepAwake];
 }
+- (BOOL)keepAwakeWanted {
+ if(!self.keepAwake)return NO;
+ // 有活在跑就必须亮着：收起会话后 AI 还在继续，锁屏会被系统挂起。
+ if(self.busy||self.jobID.length||self.localOperation.length||self.activeToolOperations.count)return YES;
+ // 没有任务时就只在会话页真的在屏上时保持常亮；收起后立刻交还系统自动锁屏。
+ BOOL chatOnScreen=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!FLEXManager.sharedManager.explorerWindow.isHidden;
+ return chatOnScreen;
+}
+- (void)updateIdleTimer {
+ UIApplication.sharedApplication.idleTimerDisabled=[self keepAwakeWanted];
+}
 - (void)applyKeepAwake {
- // 只影响本机屏幕自动锁定；关掉立刻交还给系统。
- UIApplication.sharedApplication.idleTimerDisabled=self.keepAwake;
+ [self updateIdleTimer];
  [self updateToggleButtons];
 }
 - (void)autoApproveTapped {
@@ -995,7 +1009,7 @@ static NSString *DXChatContent(id content) {
  [NSUserDefaults.standardUserDefaults setBool:self.keepAwake forKey:@"FLEX.AiFlex2.KeepAwake.v1"];
  [NSUserDefaults.standardUserDefaults synchronize];
  [self applyKeepAwake];
- [self setStatus:self.keepAwake?@"已开启屏幕常亮：不会自动锁屏":@"已关闭屏幕常亮：恢复系统自动锁屏"];
+ [self setStatus:self.keepAwake?@"已开启任务期间常亮：会话页打开或 AI 执行时不会锁屏":@"已关闭任务期间常亮：恢复系统自动锁屏"];
 }
 - (void)acceptJob:(NSString *)identifier nonce:(NSString *)nonce completion:(DXChatReply)completion {
  [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@YES} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
@@ -1228,5 +1242,5 @@ static NSString *DXChatContent(id content) {
   [self setStatus:@"AI 正在回复…"];[self request:@"/api/v1/workspace" body:@{@"action":@"ai_send",@"projectID":self.projectID,@"arguments":arguments} completion:^(NSDictionary *job,NSError *failure){if(generation!=self.agentGeneration){self.busy=NO;if([job[@"id"] length])[self request:@"/api/v1/jobs/cancel" body:@{@"id":job[@"id"]} completion:^(NSDictionary *r,NSError *e){}];return;}if(failure){self.busy=NO;self.sendButton.enabled=YES;[self failPendingReply:failure];[self showError:failure];return;}self.jobID=job[@"id"];self.jobStartedAt=NSProcessInfo.processInfo.systemUptime;self.jobNoticeMinutes=0;if([job[@"sessionID"] isKindOfClass:NSString.class])self.sessionID=job[@"sessionID"];[self waitJob:self.jobID completion:^(NSDictionary *result,NSError *endError){if(generation!=self.agentGeneration)return;self.busy=NO;self.sendButton.enabled=YES;self.jobID=nil;self.jobStartedAt=0;self.jobNoticeMinutes=0;if(endError){[self failPendingReply:endError];[self setStatus:[[endError.localizedDescription componentsSeparatedByString:@"\n"] firstObject]?:@"请求未完成"];return;}if([result[@"sessionID"] isKindOfClass:NSString.class]){self.sessionID=result[@"sessionID"];if(!self.sessionTitle.length){self.sessionTitle=question.length>30?[question substringToIndex:30]:question;[self updateSessionButton];}}[self finishReplyWithResult:result];[self rememberConnection];}];}];
  }];
 }
-- (void)dealloc {[NSNotificationCenter.defaultCenter removeObserver:self];[_agentTimer invalidate];_statusWindow.hidden=YES;}
+- (void)dealloc {UIApplication.sharedApplication.idleTimerDisabled=NO;[NSNotificationCenter.defaultCenter removeObserver:self];[_agentTimer invalidate];_statusWindow.hidden=YES;}
 @end
