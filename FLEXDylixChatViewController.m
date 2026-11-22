@@ -10,6 +10,7 @@
 #import "FLEXUtility.h"
 #import <arpa/inet.h>
 #import <ifaddrs.h>
+#import <net/if.h>
 #import <math.h>
 #import <sys/socket.h>
 #import <sys/time.h>
