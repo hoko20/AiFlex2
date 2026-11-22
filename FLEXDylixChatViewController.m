@@ -826,7 +826,7 @@ static NSString *DXChatContent(id content) {
  });
 }
 - (void)connectTapped {
- NSString *address=self.host.length&&self.port?[NSString stringWithFormat:@"http://%@:%lu",self.host,(unsigned long)self.port]:nil;
+ NSString *address=self.host.length&&self.port?[NSString stringWithFormat:@"http://%@:%lu",self.host,(unsigned long)self.port]:@"http://127.0.0.1:8787";
  NSMutableArray<AXAlertButton *> *actions=[NSMutableArray new];
  if(self.lastConnectionError.userInfo[FLEXDylixConnectionDiagnosticKey])[actions addObject:[AXAlertButton buttonWithTitle:@"上次连接诊断" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){[self showConnectionDiagnostic];}]];
  if(self.token.length)[actions addObject:[AXAlertButton buttonWithTitle:@"使用已保存连接" style:AXAlertButtonStyleInline handler:^(AXGlassAlert *alert){self.needsConnectionValidation=YES;self.lastValidateFailure=0;[self resumeSavedConnection];}]];
@@ -844,7 +844,7 @@ static NSString *DXChatContent(id content) {
   NSString *name=[NSString stringWithFormat:@"FLEX · %@",NSBundle.mainBundle.bundleIdentifier?:@"目标 App"];if(name.length>64)name=[name substringToIndex:64];[self setStatus:@"正在配对…"];
   [self request:@"/api/v1/pair" body:@{@"code":code,@"name":name,@"workspace":@YES} completion:^(NSDictionary *data,NSError *error){if(error){[self showConnectionState:3];[self showError:error];return;}[self request:@"/api/v1/status" body:@{} completion:^(NSDictionary *status,NSError *failure){if(failure){[self showConnectionState:3];[self showError:failure];return;}self.csrf=status[@"session"][@"csrf"];if(!self.csrf.length){[self showConnectionState:3];[self showError:DXChatError(@"配对后未取得请求校验值")];return;}[self showConnectionState:2];[self setStatus:@"配对完成"];[self startAgentPolling];if(self.projectID.length)[self restoreSavedWorkspace];else [self projectTapped];}];}];
  }]];
- AXPresentForm(self,@"连接 AiFlex2 Remote",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网远程」开启服务（同机可选“仅本机”），复制页面显示的完整地址，再输入页面上方的授权码。",@[
+ AXPresentForm(self,@"连接 AiFlex2",@"先在 AiFlex2 App 的「设置 → 插件开发 → 局域网连接」打开「HTTP 服务」。\n插件与 App 在同一台设备时，把 App 里「连接方式」选为「仅本机」，地址填 http://127.0.0.1:8787；跨设备才填 App 显示的局域网地址。授权码在 App 页面的「访问与配对」里。",@[
   [AXAlertField fieldWithPlaceholder:@"粘贴 AiFlex2 复制的访问地址" text:address kind:AXAlertFieldKindURL],
   [AXAlertField fieldWithPlaceholder:@"授权码" text:self.authorizationCode kind:AXAlertFieldKindSecure]
  ],actions);
