@@ -41,6 +41,9 @@ static NSString *FLEXDylixLocalIPv4(void) {
 }
 static NSDictionary *DXRememberedChat;
 static __weak FLEXDylixChatViewController *DXCurrentChat;
+// 同进程内最近一次确认连上 App 的时刻。会话页收起又点回来时，
+// 状态行不必再回到“正在检查连接…”跳一下，直接沿用已连接。
+static NSTimeInterval DXLastConnectedStamp;
 // 用户消息在 App 侧会带上一大段 FLEX 现场上下文；插件里只显示用户真正问的那句。
 static NSString *DXChatUserText(NSString *text) {
     if(!text.length)return @"";
@@ -104,6 +107,12 @@ static NSString *DXChatContent(id content) {
 @property NSUInteger agentGeneration;
 @property NSMutableDictionary<NSString *,NSNumber *> *commandGenerations;
 @property FLEXDylixStatusWindow *statusWindow;
+// 会话页所在的那套导航；页面被 FLEX 面板收起、甚至整块面板被关闭后，
+// self.navigationController 可能已经变成 nil，这里留一份强引用以便原地恢复。
+@property (nonatomic,strong) UINavigationController *chatNavigation;
+// 悬浮球的出现时刻：等页面转场稳定后再显示，避免切换瞬间一闪而过。
+@property (nonatomic) NSTimeInterval statusShowStamp;
+@property (nonatomic) BOOL statusRefreshScheduled;
 @property NSString *taskPhase, *localOperation;
 @property NSString *idleStatus, *captureStatus, *captureID;
 @property NSMutableDictionary<NSString *,NSString *> *activeToolOperations;
@@ -162,7 +171,12 @@ static NSString *DXChatContent(id content) {
 }
 - (void)resumeSavedConnection {
  if(self.validatingConnection||!self.host.length||!self.token.length)return;
- self.validatingConnection=YES;[self showConnectionState:1];NSString *host=self.host,*token=self.token;NSUInteger generation=self.sessionLoadGeneration;
+ self.validatingConnection=YES;
+ // 20 秒内刚确认过连接（收起会话又点回来的常见路径），状态行保持绿色，
+ // 校验在后台静默进行；否则每次进页面都会看到“已连接 → 正在检查 → 已连接”的闪跳。
+ BOOL recentlyConnected=DXLastConnectedStamp>0&&NSProcessInfo.processInfo.systemUptime-DXLastConnectedStamp<20;
+ if(!recentlyConnected)[self showConnectionState:1];
+ NSString *host=self.host,*token=self.token;NSUInteger generation=self.sessionLoadGeneration;
  [self request:@"/api/v1/status" body:@{} completion:^(NSDictionary *status,NSError *error){
   self.validatingConnection=NO;if(generation!=self.sessionLoadGeneration||![host isEqual:self.host]||![token isEqual:self.token])return;
   if(error){self.lastConnectionError=error;self.lastValidateFailure=NSProcessInfo.processInfo.systemUptime;[self showConnectionState:3];[self setStatus:[NSString stringWithFormat:@"%@ · 配置已保留，连接设置可查看诊断",[[error.localizedDescription componentsSeparatedByString:@"\n"] firstObject]]];return;}
@@ -250,7 +264,7 @@ static NSString *DXChatContent(id content) {
   [composer.topAnchor constraintEqualToAnchor:self.messageScroll.bottomAnchor constant:8],[composer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],[composer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],[composer.bottomAnchor constraintEqualToAnchor:bottom.topAnchor constant:-8]
  ]];
  if(!self.messages.count)[self.messages addObject:[@{@"role":@"tip",@"text":@"选中 FLEX 对象后直接提问。AI 可读取现场报告，并按权限调用实时工具。"} mutableCopy]];
- [self updateSessionButton];[self showConnectionState:self.csrf.length?1:0];
+ [self updateSessionButton];[self showConnectionState:self.csrf.length?(self.connectionState?:1):0];
  [self renderMessages];
 }
 
@@ -420,6 +434,7 @@ static NSString *DXChatContent(id content) {
 - (void)setStatus:(NSString *)text {self.idleStatus=text;[self rememberConnection];[self refreshAgentStatus];}
 - (void)showConnectionState:(NSUInteger)state {
  self.connectionState=state;
+ if(state==2)DXLastConnectedStamp=NSProcessInfo.processInfo.systemUptime;
  NSString *address=self.host.length?[NSString stringWithFormat:@"%@:%lu",self.host,(unsigned long)self.port]:@"AiFlex2";
  self.statusLabel.text=state==2?[NSString stringWithFormat:@"已连接 · %@",address]:state==1?@"正在检查连接…":state==3?@"连接中断 · 点击重连":@"未连接 AiFlex2";
  self.statusDot.backgroundColor=state==2?UIColor.systemGreenColor:state==1?UIColor.systemOrangeColor:state==3?UIColor.systemRedColor:UIColor.systemGrayColor;
@@ -568,15 +583,27 @@ static NSString *DXChatContent(id content) {
 - (void)refreshAgentStatus {
  // 只要会话不在屏幕上（收起、被 FLEX 其它页面顶掉、或整个 FLEX 面板关掉），
  // 已连接就应该有这个悬浮球；之前只认 chatMinimized，从别处关掉面板就再也看不到它。
- BOOL chatVisible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!self.navigationController.isBeingDismissed;
- BOOL show=self.csrf.length&&!chatVisible&&!self.statusSuspended&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
- if(show&&!self.statusWindow){
+ BOOL chatVisible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!FLEXManager.sharedManager.explorerWindow.isHidden&&!self.navigationController.isBeingDismissed;
+ UINavigationController *nav=self.navigationController?:self.chatNavigation;
+ // 转场途中（push/present/dismiss 正在跑）既没有稳定窗口也没稳定状态，
+ // 这时把悬浮球显出来就会在进入会话的一瞬间闪一下，必须排除掉。
+ BOOL transitioning=self.uiTransitioning||self.isBeingPresented||self.isBeingDismissed||nav.isBeingPresented||nav.isBeingDismissed||nav.transitionCoordinator!=nil;
+ BOOL wanted=self.csrf.length&&!chatVisible&&!transitioning&&!self.statusSuspended&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+ if(!wanted)self.statusShowStamp=0;
+ BOOL show=wanted;
+ if(show&&!(self.statusWindow&&!self.statusWindow.hidden)){
+  // 条件刚满足时先按住 0.3 秒：页面正在被顶掉的那一两帧里条件也会短暂成立。
+  NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+  if(self.statusShowStamp<=0)self.statusShowStamp=now;
+  if(now-self.statusShowStamp<0.3){show=NO;[self scheduleStatusRefresh];}
+ }
+ if(wanted&&!self.statusWindow){
   UIWindowScene *scene=[FLEXDylixStatusWindow activeScene];
   if(scene)self.statusWindow=[[FLEXDylixStatusWindow alloc]initWithWindowScene:scene];
   if(!self.statusWindow)self.statusWindow=[[FLEXDylixStatusWindow alloc]initWithFrame:UIScreen.mainScreen.bounds];
   __weak typeof(self) weak=self;self.statusWindow.openChat=^{typeof(self) chat=weak;if(!chat||chat.uiTransitioning)return;chat.uiTransitioning=YES;[chat restoreChatWithCompletion:^{chat.uiTransitioning=NO;}];};
  }
- if(show)[self.statusWindow attachToBestScene];
+ if(wanted)[self.statusWindow attachToBestScene];
  BOOL control=[self isScreenControl:self.localOperation];for(NSString *op in self.activeToolOperations.allValues)if([self isScreenControl:op])control=YES;
  BOOL running=self.busy||self.localOperation.length||self.activeToolOperations.count;
  NSString *title=@"AiFlex2 AI · 已连接",*detail=@"轻点返回会话";UIColor *color=UIColor.systemGreenColor;
@@ -597,6 +624,14 @@ static NSString *DXChatContent(id content) {
  self.activityLabel.text=detail;self.activityLabel.textColor=color;self.activityLabel.accessibilityLabel=detail;
  if(!show){self.statusWindow.hidden=YES;return;}
  [self.statusWindow updateTitle:title detail:detail color:color busy:running&&self.connectionState==2&&!self.agentStopped&&!self.waitingApproval];self.statusWindow.hidden=NO;
+}
+- (void)scheduleStatusRefresh {
+ if(self.statusRefreshScheduled)return;
+ self.statusRefreshScheduled=YES;
+ __weak typeof(self) weak=self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.32*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  typeof(self) chat=weak;if(!chat)return;chat.statusRefreshScheduled=NO;[chat refreshAgentStatus];
+ });
 }
 - (void)updateCaptureStatus:(NSDictionary *)event {
  if(![event isKindOfClass:NSDictionary.class])return;
@@ -631,13 +666,25 @@ static NSString *DXChatContent(id content) {
 - (void)minimizeChat:(BOOL)target completion:(dispatch_block_t)completion {
  [self.view endEditing:YES];[self rememberConnectionNow];
  dispatch_block_t done=^{self.chatMinimized=YES;if(target)[FLEXManager.sharedManager hideExplorer];[self refreshAgentStatus];if(completion)completion();};
- if(self.navigationController.presentingViewController)[self.navigationController dismissViewControllerAnimated:YES completion:done];else done();
+ UINavigationController *nav=self.navigationController?:self.chatNavigation;
+ if(nav.presentingViewController)[nav dismissViewControllerAnimated:YES completion:done];else done();
 }
 - (void)restoreChatWithCompletion:(dispatch_block_t)completion {
  self.statusWindow.hidden=YES;
  if(self.viewIfLoaded.window){[FLEXManager.sharedManager showExplorer];self.chatMinimized=NO;[self refreshAgentStatus];if(completion)completion();return;}
+ // 会话页可能已经不在任何导航栈里（用户在面板里返回过、或面板被系统整体回收），
+ // 这时 self.navigationController 是 nil。以前把这个 nil 直接交给 present，
+ // 就会抛 "Application tried to present a nil modal view controller" 把宿主杀掉。
+ UINavigationController *nav=self.navigationController?:self.chatNavigation;
+ if(!nav){
+  nav=[[UINavigationController alloc]initWithRootViewController:self];
+  nav.modalPresentationStyle=UIModalPresentationFullScreen;
+  nav.modalPresentationCapturesStatusBarAppearance=YES;
+ }
+ self.chatNavigation=nav;
  [FLEXManager.sharedManager dismissAnyPresentedTools:^{
-  [FLEXManager.sharedManager presentTool:^UINavigationController *{return self.navigationController;} completion:^{self.chatMinimized=NO;[self refreshAgentStatus];if(completion)completion();}];
+  // 非动画：面板窗口刚被重新显示，再叠一段滑入动画会先露出下面的页面，看起来就是闪一下。
+  [FLEXManager.sharedManager presentTool:^UINavigationController *{return nav;} animated:NO completion:^{self.chatMinimized=NO;[self refreshAgentStatus];if(completion)completion();}];
  }];
 }
 - (void)stopAgentTapped {
@@ -666,6 +713,15 @@ static NSString *DXChatContent(id content) {
   [AXAlertButton buttonWithTitle:@"取消" style:AXAlertButtonStyleCancel handler:nil]
  ]);
 }
+- (void)viewWillAppear:(BOOL)animated {
+ [super viewWillAppear:animated];
+ // 会话页已经在屏上，悬浮球立刻收起，不等下一轮轮询（否则进页面的瞬间会闪一下）。
+ UINavigationController *nav=self.navigationController;
+ if(nav)self.chatNavigation=nav;
+ self.statusShowStamp=0;
+ self.statusWindow.hidden=YES;
+ [self refreshAgentStatus];
+}
 - (void)viewDidAppear:(BOOL)animated {
  [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];
  if(self.needsConnectionValidation){
@@ -687,6 +743,8 @@ static NSString *DXChatContent(id content) {
  if(!nav||![nav.viewControllers containsObject:self]){
   [self.agentTimer invalidate];self.agentTimer=nil;
   self.statusWindow.hidden=YES;
+  // 已经被 pop 出栈，这层导航不再代表会话，留着会让悬浮球恢复出一个空面板。
+  self.chatNavigation=nil;
  }
 }
 - (void)startAgentPolling {

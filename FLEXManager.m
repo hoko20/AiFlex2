@@ -110,8 +110,12 @@
 }
 
 - (void)presentTool:(UINavigationController * _Nonnull (^)(void))future completion:(void (^)(void))completion {
+    [self presentTool:future animated:YES completion:completion];
+}
+
+- (void)presentTool:(UINavigationController * _Nonnull (^)(void))future animated:(BOOL)animated completion:(void (^)(void))completion {
     [self showExplorer];
-    [self.explorerViewController presentTool:future completion:completion];
+    [self.explorerViewController presentTool:future animated:animated completion:completion];
 }
 
 - (void)presentEmbeddedTool:(UIViewController *)tool completion:(void (^)(UINavigationController *))completion {

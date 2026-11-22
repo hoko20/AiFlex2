@@ -30,6 +30,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)presentTool:(UINavigationController *(^)(void))viewControllerFuture
          completion:(void (^_Nullable)(void))completion;
 
+/// @brief 同 presentTool:completion:，animated:NO 时不播放转场动画。
+- (void)presentTool:(UINavigationController *(^)(void))viewControllerFuture
+           animated:(BOOL)animated
+         completion:(void (^_Nullable)(void))completion;
+
 /// Programmatically presents a new navigation controller with the given view controller.
 /// The completion block is passed this new navigation controller.
 - (void)presentEmbeddedTool:(UIViewController *)viewController

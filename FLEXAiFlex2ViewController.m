@@ -822,6 +822,8 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     chat.selectedObject = self.selectedObject;
     __weak typeof(self) weakSelf = self;
     chat.reportProvider = ^NSString *{ return weakSelf.report ?: @""; };
+    // 先把视图建好再 push：否则转场动画的第一帧是空白页，看起来就是“闪一下”。
+    [chat loadViewIfNeeded];
     [self.navigationController pushViewController:chat animated:YES];
 }
 
@@ -991,7 +993,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     UINavigationController *nav = self.navigationController;
     if (!nav) nav = [[UINavigationController alloc] initWithRootViewController:self];
     [FLEXManager.sharedManager dismissAnyPresentedTools:^{
-        [FLEXManager.sharedManager presentTool:^UINavigationController *{ return nav; } completion:^{
+        [FLEXManager.sharedManager presentTool:^UINavigationController *{ return nav; } animated:NO completion:^{
             self.minimized = NO;
             if (completion) completion();
         }];

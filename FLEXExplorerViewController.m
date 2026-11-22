@@ -434,8 +434,10 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
 }
 
 - (void)recentButtonTapped:(FLEXExplorerToolbarItem *)sender {
-    NSAssert(FLEXTabList.sharedList.activeTab, @"必须有活动标签");
-    [self presentViewController:FLEXTabList.sharedList.activeTab animated:YES completion:nil];
+    // 标签可能在面板收起期间被清掉，nil 交给 present 会直接崩宿主。
+    UIViewController *tab = FLEXTabList.sharedList.activeTab;
+    if (!tab) return;
+    [self presentViewController:tab animated:YES completion:nil];
 }
 
 - (void)moveButtonTapped:(FLEXExplorerToolbarItem *)sender {
@@ -1058,19 +1060,48 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
     if (self.presentedViewController) {
         [self dismissViewControllerAnimated:YES completion:completion];
     } else if (future) {
-        [self presentViewController:future() animated:YES completion:completion];
+        [self presentProvidedTool:future animated:YES completion:completion];
     }
 }
 
 - (void)presentTool:(UINavigationController *(^)(void))future
          completion:(void (^)(void))completion {
+    [self presentTool:future animated:YES completion:completion];
+}
+
+// 从悬浮球恢复会话时用非动画版本：窗口刚被重新显示，此时再叠一段 present 动画，
+// 用户会先看到下面的面板、再看到会话滑上来，视觉上就是"闪一下"。
+- (void)presentTool:(UINavigationController *(^)(void))future
+           animated:(BOOL)animated
+         completion:(void (^)(void))completion {
+    if (!future) { if (completion) completion(); return; }
     if (self.presentedViewController) {
-        [self dismissViewControllerAnimated:YES completion:^{
-            [self presentViewController:future() animated:YES completion:completion];
+        [self dismissViewControllerAnimated:animated completion:^{
+            [self presentProvidedTool:future animated:animated completion:completion];
         }];
-    } else if (future) {
-        [self presentViewController:future() animated:YES completion:completion];
+    } else {
+        [self presentProvidedTool:future animated:animated completion:completion];
     }
+}
+
+// 提供者可能返回 nil（会话页已经被 pop、导航栈随页面一起释放等）。
+// 把 nil 直接交给 presentViewController: 会抛
+// "Application tried to present a nil modal view controller" 并被系统直接杀掉。
+- (void)presentProvidedTool:(UINavigationController *(^)(void))future
+                   animated:(BOOL)animated
+                 completion:(void (^)(void))completion {
+    id provided = future ? future() : nil;
+    if (![provided isKindOfClass:UIViewController.class]) {
+        if (completion) completion();
+        return;
+    }
+    UIViewController *tool = provided;
+    // 已经挂在别的窗口上或正在被 present 时不要重复 present，否则会互相顶掉。
+    if (tool.viewIfLoaded.window || tool.presentingViewController) {
+        if (completion) completion();
+        return;
+    }
+    [self presentViewController:tool animated:animated completion:completion];
 }
 
 - (FLEXWindow *)window {

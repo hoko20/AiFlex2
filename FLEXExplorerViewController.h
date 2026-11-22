@@ -37,6 +37,14 @@
 - (void)presentTool:(UINavigationController *(^)(void))future
          completion:(void (^)(void))completion;
 
+/// @brief 同上，但可以关掉转场动画。
+///
+/// 从悬浮球恢复会话时窗口刚刚被重新显示，再叠一段 present 动画会先露出下面的面板，
+/// 观感上就是"闪一下"，这种场景用 animated:NO 直接到位。
+- (void)presentTool:(UINavigationController *(^)(void))future
+           animated:(BOOL)animated
+         completion:(void (^)(void))completion;
+
 - (void)showAiFlex2PanelForObject:(id)object report:(NSString *)report className:(NSString *)className;
 
 // Keyboard shortcut helpers
