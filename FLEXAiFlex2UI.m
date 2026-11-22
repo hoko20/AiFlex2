@@ -477,6 +477,14 @@ void AXRestoreStatusBarStyle(void) {
 
 #pragma mark - 玻璃弹窗
 
+// 轻触反馈：弹层出现与选择落点给一次，让"点到了"有物理确认。
+static void AXFeedback(UIImpactFeedbackStyle style) {
+    UIImpactFeedbackGenerator *generator =
+        [[UIImpactFeedbackGenerator alloc] initWithStyle:style];
+    [generator prepare];
+    [generator impactOccurred];
+}
+
 // 弹窗与底部列表共用一个可见栈：AI 走界面自动化前要能判断"用户还有没处理完的层"。
 static NSMutableArray *AXVisibleAlerts(void) {
     static NSMutableArray *alerts;
@@ -661,6 +669,10 @@ static NSMutableArray *AXVisibleAlerts(void) {
                 resolvedColorWithTraitCollection:field.traitCollection].CGColor;
             field.clearButtonMode = UITextFieldViewModeWhileEditing;
             field.delegate = self;
+            [field addTarget:self action:@selector(fieldBeganEditing:)
+                forControlEvents:UIControlEventEditingDidBegin];
+            [field addTarget:self action:@selector(fieldEndedEditing:)
+                forControlEvents:UIControlEventEditingDidEnd];
             field.placeholder = spec.placeholder;
             if (spec.text.length) field.text = spec.text;
             switch (spec.kind) {
@@ -772,6 +784,11 @@ static NSMutableArray *AXVisibleAlerts(void) {
         weight:(action.style == AXAlertButtonStylePrimary ? UIFontWeightSemibold : UIFontWeightMedium)];
     [button setTitle:action.title forState:UIControlStateNormal];
     [button addTarget:self action:@selector(actionTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [button addTarget:self action:@selector(buttonPressed:)
+        forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
+    [button addTarget:self action:@selector(buttonReleased:)
+        forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+                         UIControlEventTouchCancel | UIControlEventTouchDragExit];
 
     switch (action.style) {
         case AXAlertButtonStylePrimary:
@@ -797,8 +814,27 @@ static NSMutableArray *AXVisibleAlerts(void) {
     return button;
 }
 
+- (void)fieldBeganEditing:(UITextField *)field {
+    field.layer.borderWidth = 1.5;
+    field.layer.borderColor = UIColor.systemBlueColor.CGColor;
+}
+
+- (void)fieldEndedEditing:(UITextField *)field {
+    field.layer.borderWidth = 0.5;
+    field.layer.borderColor = [UIColor.separatorColor
+        resolvedColorWithTraitCollection:field.traitCollection].CGColor;
+}
+
+- (void)buttonPressed:(UIButton *)sender { sender.alpha = 0.72; }
+
+- (void)buttonReleased:(UIButton *)sender { sender.alpha = 1; }
+
 - (void)fireAction:(AXAlertButton *)action {
     if (self.dismissing || !action) return;
+    if (action.style == AXAlertButtonStylePrimary ||
+        action.style == AXAlertButtonStyleDestructive) {
+        AXFeedback(UIImpactFeedbackStyleMedium);
+    }
     void (^handler)(AXGlassAlert *) = action.handler;
     [self dismiss];
     if (handler) {
@@ -832,7 +868,10 @@ static NSMutableArray *AXVisibleAlerts(void) {
                                                object:nil];
     self.overlay.alpha = 0;
     self.card.transform = CGAffineTransformMakeScale(1.04, 1.04);
-    [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+    AXFeedback(UIImpactFeedbackStyleLight);
+    [UIView animateWithDuration:0.26 delay:0 usingSpringWithDamping:0.86
+           initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{
         self.overlay.alpha = 1;
         self.card.transform = CGAffineTransformIdentity;
     } completion:nil];
@@ -864,7 +903,9 @@ static NSMutableArray *AXVisibleAlerts(void) {
     CGRect keyboard = [self.overlay convertRect:frame fromView:nil];
     CGFloat overlap = CGRectGetMaxY(self.overlay.bounds) - CGRectGetMinY(keyboard);
     if (overlap < 0) overlap = 0;
-    self.centerConstraint.constant = -overlap / 2.0;
+    // 键盘很高时不要把卡片顶出屏幕上沿，最多上移三成屏高。
+    CGFloat limit = CGRectGetHeight(self.overlay.bounds) * 0.3;
+    self.centerConstraint.constant = -MIN(overlap / 2.0, limit);
     [UIView animateWithDuration:0.2 animations:^{
         [self.overlay layoutIfNeeded];
     }];
@@ -1008,7 +1049,7 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
     if (title.length) {
         UILabel *label = [UILabel new];
         label.text = title;
-        label.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        label.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
         label.textColor = UIColor.labelColor;
         label.textAlignment = NSTextAlignmentCenter;
         label.numberOfLines = 0;
@@ -1017,7 +1058,7 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
     if (message.length) {
         UILabel *label = [UILabel new];
         label.text = message;
-        label.font = [UIFont systemFontOfSize:12.5];
+        label.font = [UIFont systemFontOfSize:13];
         label.textColor = UIColor.secondaryLabelColor;
         label.textAlignment = NSTextAlignmentCenter;
         label.numberOfLines = 0;
@@ -1044,9 +1085,14 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
         [rows.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
         [rows.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
         [rows.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
-        [rows.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
-        [scroll.heightAnchor constraintLessThanOrEqualToAnchor:_overlay.heightAnchor multiplier:0.55]
+        [rows.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]
     ]];
+    // 内容多高就多高，只有超过半屏才滚动。这条不能放在上面：scroll 此时还没进层级，
+    // 和 overlay 没有共同祖先，激活会直接抛异常并把宿主带走。
+    NSLayoutConstraint *fitHeight =
+        [scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];
+    fitHeight.priority = 750;
+    fitHeight.active = YES;
     [content addObject:scroll];
 
     UIButton *cancel = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -1068,6 +1114,8 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [_card addSubview:stack];
     if (content.count > 1) [stack setCustomSpacing:16 afterView:content[content.count - 2]];
+    // 列表最多占半屏，再多就在卡片内滚动。此时 scroll 的祖先链已到 overlay，约束才合法。
+    [scroll.heightAnchor constraintLessThanOrEqualToAnchor:_overlay.heightAnchor multiplier:0.5].active = YES;
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:_card.topAnchor constant:18],
         [stack.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor constant:14],
@@ -1078,17 +1126,27 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
 }
 
 - (UIView *)separatorLine {
+    UIView *wrap = [UIView new];
+    wrap.translatesAutoresizingMaskIntoConstraints = NO;
     UIView *line = [UIView new];
     line.translatesAutoresizingMaskIntoConstraints = NO;
     line.backgroundColor = [UIColor.separatorColor colorWithAlphaComponent:0.4];
-    [line.heightAnchor constraintEqualToConstant:0.5].active = YES;
-    return line;
+    [wrap addSubview:line];
+    [NSLayoutConstraint activateConstraints:@[
+        [line.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+        [line.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+        [line.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor constant:14],
+        [line.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor constant:-14],
+        [line.heightAnchor constraintEqualToConstant:0.5]
+    ]];
+    return wrap;
 }
 
 - (UIControl *)rowForItem:(AXSheetItem *)item index:(NSUInteger)index {
     UIControl *row = [UIControl new];
     row.translatesAutoresizingMaskIntoConstraints = NO;
     row.tag = (NSInteger)index;
+    if (item.selected) row.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.06];
     [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventTouchUpInside];
     [row addTarget:self action:@selector(rowPressed:) forControlEvents:UIControlEventTouchDown];
     [row addTarget:self action:@selector(rowReleased:) forControlEvents:
@@ -1126,7 +1184,7 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
     [row addSubview:check];
 
     [NSLayoutConstraint activateConstraints:@[
-        [row.heightAnchor constraintGreaterThanOrEqualToConstant:52],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:54],
         [texts.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:14],
         [texts.trailingAnchor constraintLessThanOrEqualToAnchor:check.leadingAnchor constant:-10],
         [texts.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
@@ -1141,8 +1199,11 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
 - (void)present {
     [AXVisibleAlerts() addObject:self];
     self.overlay.alpha = 0;
-    self.card.transform = CGAffineTransformMakeTranslation(0, 44);
-    [UIView animateWithDuration:0.26 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+    self.card.transform = CGAffineTransformMakeTranslation(0, 52);
+    AXFeedback(UIImpactFeedbackStyleLight);
+    [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.9
+           initialSpringVelocity:0.35 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{
         self.overlay.alpha = 1;
         self.card.transform = CGAffineTransformIdentity;
     } completion:nil];
@@ -1150,11 +1211,21 @@ AXGlassAlert *AXPresentForm(UIViewController *host,
 
 - (void)backdropTapped { [self closeWithIndex:-1]; }
 - (void)cancelTapped { [self closeWithIndex:-1]; }
-- (void)rowTapped:(UIControl *)sender { [self closeWithIndex:sender.tag]; }
-- (void)rowPressed:(UIControl *)sender {
-    sender.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.06];
+- (void)rowTapped:(UIControl *)sender {
+    AXFeedback(UIImpactFeedbackStyleLight);
+    [self closeWithIndex:sender.tag];
 }
-- (void)rowReleased:(UIControl *)sender { sender.backgroundColor = UIColor.clearColor; }
+- (void)rowPressed:(UIControl *)sender {
+    sender.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.11];
+}
+- (void)rowReleased:(UIControl *)sender {
+    NSInteger index = sender.tag;
+    BOOL selected = index >= 0 && index < (NSInteger)self.items.count &&
+                    self.items[(NSUInteger)index].selected;
+    sender.backgroundColor = selected
+        ? [UIColor.systemBlueColor colorWithAlphaComponent:0.06]
+        : UIColor.clearColor;
+}
 
 - (void)closeWithIndex:(NSInteger)index {
     if (self.dismissing) return;
