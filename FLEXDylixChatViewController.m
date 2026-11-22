@@ -459,6 +459,17 @@ static NSString *DXChatContent(id content) {
 }
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];if(self.needsConnectionValidation){[self resumeSavedConnection];return;}[self startAgentPolling];[self pollAgent]; }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self rememberConnection]; }
+// 被返回上一级（pop）时结束轮询：定时器强持有 self，不 invalidate 会让控制器永远不释放，
+// MCP 的 chat_status/minimize_chat 也会一直落到这个已经看不见的页面上。
+// 收起（dismiss）不算 pop，导航栈里仍然包含 self，轮询要继续跑。
+- (void)viewDidDisappear:(BOOL)animated {
+ [super viewDidDisappear:animated];
+ UINavigationController *nav=self.navigationController;
+ if(!nav||![nav.viewControllers containsObject:self]){
+  [self.agentTimer invalidate];self.agentTimer=nil;
+  self.statusWindow.hidden=YES;
+ }
+}
 - (void)startAgentPolling {
  if(self.agentTimer||!self.csrf.length||self.needsConnectionValidation)return;
  self.agentTimer=[NSTimer timerWithTimeInterval:1 target:self selector:@selector(pollAgent) userInfo:nil repeats:YES];
