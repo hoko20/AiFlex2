@@ -29,7 +29,7 @@
  self.capsule.backgroundColor=UIColor.secondarySystemBackgroundColor;self.capsule.layer.cornerRadius=22;
  self.capsule.layer.borderWidth=.5;self.capsule.layer.borderColor=UIColor.separatorColor.CGColor;
  self.capsule.layer.shadowColor=UIColor.blackColor.CGColor;self.capsule.layer.shadowOpacity=.16;self.capsule.layer.shadowRadius=10;self.capsule.layer.shadowOffset=CGSizeMake(0,3);
- self.capsule.accessibilityIdentifier=@"dylix.agent.status";self.capsule.accessibilityHint=@"轻点返回同一 AI 会话，可拖动调整位置";
+ self.capsule.accessibilityIdentifier=@"aiflex2.agent.status";self.capsule.accessibilityHint=@"轻点返回同一 AI 会话，可拖动调整位置";
  [self.capsule addTarget:self action:@selector(openTapped) forControlEvents:UIControlEventTouchUpInside];
  [self.capsule addGestureRecognizer:[[UIPanGestureRecognizer alloc]initWithTarget:self action:@selector(pan:)]];
  self.dot=[[UIView alloc]initWithFrame:CGRectMake(12,14,6,6)];self.dot.layer.cornerRadius=3;self.dot.userInteractionEnabled=NO;

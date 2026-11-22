@@ -80,10 +80,13 @@
             flex.windowScene = FLEXUtility.appKeyWindow.windowScene;
         }
     }
+    [self.explorerViewController setNeedsStatusBarAppearanceUpdate];
 }
 
 - (void)hideExplorer {
     self.explorerWindow.hidden = YES;
+    // 交还状态栏控制权，让宿主恢复自己的样式。
+    [self.explorerViewController setNeedsStatusBarAppearanceUpdate];
 }
 
 - (void)toggleExplorer {

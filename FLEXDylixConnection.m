@@ -9,7 +9,7 @@
 #import <sys/socket.h>
 #import <unistd.h>
 
-NSString *const FLEXDylixConnectionDiagnosticKey = @"FLEXDylixConnectionDiagnostic";
+NSString *const FLEXDylixConnectionDiagnosticKey = @"FLEXAiFlex2ConnectionDiagnostic";
 
 NSError *FLEXDylixConnectionError(NSString *host, NSUInteger port, NSString *path,
                                  NSString *stage, NSInteger posixCode, NSInteger httpStatus) {
@@ -71,7 +71,7 @@ NSError *FLEXDylixConnectionError(NSString *host, NSUInteger port, NSString *pat
         message];
     NSMutableDictionary *metadata = [@{NSLocalizedDescriptionKey:message, FLEXDylixConnectionDiagnosticKey:diagnostic} mutableCopy];
     if (posixCode) metadata[NSUnderlyingErrorKey] = [NSError errorWithDomain:NSPOSIXErrorDomain code:posixCode userInfo:nil];
-    return [NSError errorWithDomain:httpStatus ? @"FLEX.Dylix.HTTP" : @"FLEX.Dylix.Connection"
+    return [NSError errorWithDomain:httpStatus ? @"FLEX.AiFlex2.HTTP" : @"FLEX.AiFlex2.Connection"
                               code:httpStatus ?: posixCode userInfo:metadata];
 }
 
@@ -147,8 +147,8 @@ NSDictionary *FLEXDylixHTTPRequest(NSString *host, NSUInteger port, NSString *pa
     if (!json) { if(error)*error=FLEXDylixConnectionError(host,port,path,@"encode",EINVAL,0); return nil; }
     NSString *origin = [NSString stringWithFormat:@"http://%@:%lu",host,(unsigned long)port];
     NSMutableString *header = [NSMutableString stringWithFormat:@"%@ %@ HTTP/1.1\r\nHost: %@:%lu\r\nOrigin: %@\r\nContent-Type: application/json\r\nContent-Length: %lu\r\nConnection: close\r\n",get?@"GET":@"POST",path,host,(unsigned long)port,origin,(unsigned long)(get?0:json.length)];
-    if (token.length) [header appendFormat:@"Cookie: DylixRemoteSession=%@\r\n",token];
-    if (csrf.length) [header appendFormat:@"x-dylix-csrf: %@\r\n",csrf];
+    if (token.length) [header appendFormat:@"Cookie: AiFlex2RemoteSession=%@\r\n",token];
+    if (csrf.length) [header appendFormat:@"x-aiflex2-csrf: %@\r\n",csrf];
     [header appendString:@"\r\n"];
     NSMutableData *wire = [[header dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
     if (!get) [wire appendData:json];
@@ -235,8 +235,8 @@ NSDictionary *FLEXDylixHTTPRequest(NSString *host, NSUInteger port, NSString *pa
         for(NSString *line in [head componentsSeparatedByString:@"\r\n"]) {
             if(![line.lowercaseString hasPrefix:@"set-cookie:"])continue;
             NSString *value=[[line substringFromIndex:11] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-            if(![value hasPrefix:@"DylixRemoteSession="])continue;
-            if(newToken)*newToken=[[value substringFromIndex:[@"DylixRemoteSession=" length]] componentsSeparatedByString:@";"].firstObject;
+            if(![value hasPrefix:@"AiFlex2RemoteSession="])continue;
+            if(newToken)*newToken=[[value substringFromIndex:[@"AiFlex2RemoteSession=" length]] componentsSeparatedByString:@";"].firstObject;
         }
         result=data;
     } while(NO);

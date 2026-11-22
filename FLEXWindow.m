@@ -28,7 +28,12 @@
 }
 
 - (BOOL)shouldAffectStatusBarAppearance {
-    return [self isKeyWindow];
+    // 面板顶部是不透明栏，状态栏若继续跟随宿主（宿主可能是浅色文字），
+    // 白底配白字就看不清了。
+    // 只在真正打开了 FLEX 页面（有 modal）时接管状态栏，
+    // 悬浮工具栏状态下仍然交还宿主，避免误改宿主样式。
+    if (self.isHidden) return NO;
+    return self.rootViewController.presentedViewController != nil;
 }
 
 - (BOOL)canBecomeKeyWindow {

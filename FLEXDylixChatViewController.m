@@ -326,7 +326,7 @@ static NSString *DXChatContent(id content) {
  self.activityLabel.lineBreakMode=NSLineBreakByTruncatingTail;
  self.activityLabel.textAlignment=NSTextAlignmentRight;
  self.activityLabel.numberOfLines=2;
- self.activityLabel.accessibilityIdentifier=@"dylix.agent.activity";
+ self.activityLabel.accessibilityIdentifier=@"aiflex2.agent.activity";
 
  UIStackView *metaRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.contextLabel,self.activityLabel]];
  metaRow.axis=UILayoutConstraintAxisHorizontal;
