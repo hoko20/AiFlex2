@@ -31,6 +31,8 @@ static NSString *DXChatContent(id content) {
 @property NSUInteger port;
 @property NSString *authorizationCode;
 @property BOOL needsConnectionValidation, validatingConnection, restoringWorkspace, storageWarningShown;
+- (void)rememberConnectionNow;
+- (void)nextPollIn:(NSTimeInterval)interval;
 @property UILabel *statusLabel, *activityLabel, *contextLabel;
 @property UITextView *input;
 @property UIScrollView *messageScroll;
@@ -64,6 +66,9 @@ static NSString *DXChatContent(id content) {
 @property NSArray<NSDictionary *> *reasoningOptions;
 @property NSUInteger lastCaptureSequence;
 @property NSTimeInterval lastTaskUpdate;
+// 轮询每秒都会带一次全文和状态：节流掉重复的 Markdown 重排、滚动和写盘。
+@property NSTimeInterval lastLiveRender;
+@property NSTimeInterval lastRemember;
 @property BOOL waitingApproval;
 @property BOOL statusSuspended;
 @property NSError *lastConnectionError;
@@ -88,8 +93,15 @@ static NSString *DXChatContent(id content) {
  self.needsConnectionValidation=self.host.length&&self.token.length;
  for(NSDictionary *item in state[@"messages"]){if([item isKindOfClass:NSDictionary.class]&&[item[@"role"] isKindOfClass:NSString.class]&&[item[@"text"] isKindOfClass:NSString.class])[self.messages addObject:[item mutableCopy]];}
 }
-- (void)rememberConnection {
+- (void)rememberConnection { [self rememberConnection:NO]; }
+// 强制写入：离开页面、最小化、配对成功这类"进程可能随时被挂起"的时刻才需要。
+- (void)rememberConnectionNow { [self rememberConnection:YES]; }
+- (void)rememberConnection:(BOOL)force {
  if(!self.host.length||!self.port)return;
+ // 这里会复制整份会话并写 UserDefaults；流式期间每秒一次纯属浪费，节流到 3 秒。
+ NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+ if(!force&&self.lastRemember>0&&now-self.lastRemember<3.0)return;
+ self.lastRemember=now;
  NSMutableDictionary *state=[@{@"host":self.host,@"port":@(self.port)} mutableCopy];
  for(NSString *key in @[@"authorizationCode",@"token",@"csrf",@"projectID",@"projectName",@"connectionID",@"modelID",@"modelName",@"sessionID",@"sessionTitle"]){id value=[self valueForKey:key];if(value)state[key]=value;}
  NSError *error=nil;if(![FLEXDylixPreferences saveState:state error:&error]&&!self.storageWarningShown){self.storageWarningShown=YES;self.activityLabel.text=error.localizedDescription;}
@@ -104,7 +116,7 @@ static NSString *DXChatContent(id content) {
   self.validatingConnection=NO;if(generation!=self.sessionLoadGeneration||![host isEqual:self.host]||![token isEqual:self.token])return;
   if(error){self.lastConnectionError=error;[self showConnectionState:3];[self setStatus:[NSString stringWithFormat:@"%@ · 配置已保留，连接设置可查看诊断",[[error.localizedDescription componentsSeparatedByString:@"\n"] firstObject]]];return;}
   NSString *csrf=status[@"session"][@"csrf"];if(![csrf isKindOfClass:NSString.class]||!csrf.length){[self showConnectionState:3];[self setStatus:@"保存的授权已失效，地址和选择已保留，请重新配对"];return;}
-  self.csrf=csrf;self.needsConnectionValidation=NO;self.missedHeartbeats=0;[self showConnectionState:2];[self rememberConnection];[self startAgentPolling];[self restoreSavedWorkspace];
+  self.csrf=csrf;self.needsConnectionValidation=NO;self.missedHeartbeats=0;[self showConnectionState:2];[self rememberConnectionNow];[self startAgentPolling];[self restoreSavedWorkspace];
  }];
 }
 - (void)restoreSavedWorkspace {
@@ -277,7 +289,17 @@ static NSString *DXChatContent(id content) {
 - (void)renderMessages {
  for(UIView *view in self.messageStack.arrangedSubviews){[self.messageStack removeArrangedSubview:view];[view removeFromSuperview];}
  self.liveLabel=nil;
- for(NSUInteger index=0;index<self.messages.count;index++){
+ // 只渲染尾部窗口：整段历史都建成 UILabel + AttributedString 会长期占内存，
+ // 完整记录在 App 侧，这里只是当前会话的显示窗口。
+ NSUInteger total=self.messages.count;
+ NSUInteger start=total>120?total-120:0;
+ if(start){
+  UILabel *folded=[UILabel new];folded.text=[NSString stringWithFormat:@"更早的 %lu 条消息已折叠，完整记录在 App 会话里",(unsigned long)start];
+  folded.font=[UIFont systemFontOfSize:12];folded.textColor=UIColor.tertiaryLabelColor;folded.textAlignment=NSTextAlignmentCenter;folded.numberOfLines=0;
+  folded.translatesAutoresizingMaskIntoConstraints=NO;
+  [self.messageStack addArrangedSubview:folded];
+ }
+ for(NSUInteger index=start;index<self.messages.count;index++){
   NSDictionary *message=self.messages[index];NSString *role=message[@"role"],*value=message[@"text"]?:@"";BOOL mine=[role isEqualToString:@"user"],tip=[role isEqualToString:@"tip"];
   UIView *row=[UIView new];row.translatesAutoresizingMaskIntoConstraints=NO;
   if(tip){
@@ -422,7 +444,7 @@ static NSString *DXChatContent(id content) {
  return @{@"chatVisible":@(visible),@"minimized":@(self.chatMinimized),@"connected":@(self.connectionState==2&&!self.needsConnectionValidation&&self.missedHeartbeats<2),@"taskRunning":@(self.busy),@"stopped":@(self.agentStopped),@"sessionID":self.sessionID?:@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(!visible&&FLEXManager.sharedManager.isHidden&&!self.uiTransitioning),@"statusVisible":@(self.statusWindow&&!self.statusWindow.hidden),@"activity":self.taskPhase?:@"",@"uiTransitioning":@(self.uiTransitioning)};
 }
 - (void)minimizeChat:(BOOL)target completion:(dispatch_block_t)completion {
- [self.view endEditing:YES];[self rememberConnection];
+ [self.view endEditing:YES];[self rememberConnectionNow];
  dispatch_block_t done=^{self.chatMinimized=YES;if(target)[FLEXManager.sharedManager hideExplorer];[self refreshAgentStatus];if(completion)completion();};
  if(self.navigationController.presentingViewController)[self.navigationController dismissViewControllerAnimated:YES completion:done];else done();
 }
@@ -452,13 +474,13 @@ static NSString *DXChatContent(id content) {
   [self request:@"/api/v1/logout" body:@{} completion:^(NSDictionary *result,NSError *error){
    NSError *storageError=nil;[FLEXDylixPreferences clearAuthorization:&storageError];
    self.sessionLoadGeneration++;self.token=nil;self.csrf=nil;self.authorizationCode=nil;self.jobID=nil;self.needsConnectionValidation=NO;
-   self.missedHeartbeats=0;[self showConnectionState:0];[self rememberConnection];[self setStatus:storageError?storageError.localizedDescription:@"已断开 AiFlex2，已保留项目和模型选择"];
+   self.missedHeartbeats=0;[self showConnectionState:0];[self rememberConnectionNow];[self setStatus:storageError?storageError.localizedDescription:@"已断开 AiFlex2，已保留项目和模型选择"];
   }];
  }]];
  [self presentViewController:alert animated:YES completion:nil];
 }
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];if(self.needsConnectionValidation){[self resumeSavedConnection];return;}[self startAgentPolling];[self pollAgent]; }
-- (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self rememberConnection]; }
+- (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self rememberConnectionNow]; }
 // 被返回上一级（pop）时结束轮询：定时器强持有 self，不 invalidate 会让控制器永远不释放，
 // MCP 的 chat_status/minimize_chat 也会一直落到这个已经看不见的页面上。
 // 收起（dismiss）不算 pop，导航栈里仍然包含 self，轮询要继续跑。
@@ -472,8 +494,15 @@ static NSString *DXChatContent(id content) {
 }
 - (void)startAgentPolling {
  if(self.agentTimer||!self.csrf.length||self.needsConnectionValidation)return;
- self.agentTimer=[NSTimer timerWithTimeInterval:1 target:self selector:@selector(pollAgent) userInfo:nil repeats:YES];
+ // 空闲时 2 秒一轮足够：原来固定 1 秒，即使没有任何任务也在持续打请求，是插件侧最大的耗电项。
+ self.agentTimer=[NSTimer timerWithTimeInterval:2 target:self selector:@selector(pollAgent) userInfo:nil repeats:YES];
+ self.agentTimer.tolerance=0.35;
  [NSRunLoop.mainRunLoop addTimer:self.agentTimer forMode:NSRunLoopCommonModes];[self pollAgent];
+}
+// 有活干就排紧一点，没活干就退到 2 秒，避免空转。
+- (void)nextPollIn:(NSTimeInterval)interval {
+ NSTimer *timer=self.agentTimer;
+ if(timer)timer.fireDate=[NSDate dateWithTimeIntervalSinceNow:MAX(0.15,interval)];
 }
 - (void)pollAgent {
  [self refreshAgentStatus];
@@ -481,13 +510,14 @@ static NSString *DXChatContent(id content) {
  self.agentPolling=YES;NSUInteger generation=self.sessionLoadGeneration;
  [self request:@"/api/v1/flex/next" body:@{} completion:^(NSDictionary *command,NSError *error){
   self.agentPolling=NO;if(generation!=self.sessionLoadGeneration||!self.csrf.length||self.needsConnectionValidation)return;
-  if(error){self.lastConnectionError=error;self.missedHeartbeats++;if(self.missedHeartbeats>=2){[self showConnectionState:3];[self setStatus:@"连接中断 · 连接设置可查看诊断，正在重试"]; }return;}
+  if(error){self.lastConnectionError=error;self.missedHeartbeats++;if(self.missedHeartbeats>=2){[self showConnectionState:3];[self setStatus:@"连接中断 · 连接设置可查看诊断，正在重试"]; }[self nextPollIn:self.missedHeartbeats>=2?3.0:1.5];return;}
   self.missedHeartbeats=0;[self showConnectionState:2];
-  if(![command[@"id"] isKindOfClass:NSString.class]){if(self.pendingCommandID&&self.agentReplies[self.pendingCommandID]){[self.agentReplies removeObjectForKey:self.pendingCommandID];self.pendingCommandID=nil;}return;}
+  if(![command[@"id"] isKindOfClass:NSString.class]){if(self.pendingCommandID&&self.agentReplies[self.pendingCommandID]){[self.agentReplies removeObjectForKey:self.pendingCommandID];self.pendingCommandID=nil;}[self nextPollIn:(self.busy||self.activeToolOperations.count)?0.5:1.8];return;}
   NSString *identifier=command[@"id"];NSDictionary *reply=self.agentReplies[identifier];
-  if(reply){[self sendAgentReply:reply];return;}
-  if(self.pendingCommandID)return;
+  if(reply){[self sendAgentReply:reply];[self nextPollIn:0.4];return;}
+  if(self.pendingCommandID){[self nextPollIn:0.5];return;}
   self.pendingCommandID=identifier;
+  [self nextPollIn:0.4];
   [self executeAgentCommand:command];
  }];
 }
@@ -706,7 +736,19 @@ static NSString *DXChatContent(id content) {
   [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];menu.popoverPresentationController.sourceView=self.modelButton;menu.popoverPresentationController.sourceRect=self.modelButton.bounds;[self presentViewController:menu animated:YES completion:nil];
  }];
 }
-- (void)setLiveText:(NSString *)text {if(!self.liveMessage)return;self.liveMessage[@"text"]=text?:@"";self.liveHasContent=text.length>0;self.liveLabel.attributedText=FLEXDylixRenderMarkdown(text,self.liveLabel.textColor);[self scrollMessagesToBottom];[self rememberConnection];}
+- (void)setLiveText:(NSString *)text {
+ if(!self.liveMessage)return;
+ NSString *value=text?:@"";
+ // 任务轮询每秒都会回传一次全文：内容没变就不要重排 Markdown、不要抢滚动、更不要写盘。
+ if([self.liveMessage[@"text"] isEqualToString:value])return;
+ self.liveMessage[@"text"]=value;self.liveHasContent=value.length>0;
+ NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+ if(now-self.lastLiveRender>=0.2){self.lastLiveRender=now;self.liveLabel.attributedText=FLEXDylixRenderMarkdown(value,self.liveLabel.textColor);}
+ else self.liveLabel.text=value;
+ // 只有本来就贴着底部时才跟随；用户上翻阅读历史时不要抢走滚动位置。
+ UIScrollView *scroll=self.messageScroll;
+ if(scroll.bounds.size.height>0&&scroll.contentSize.height-scroll.bounds.size.height-scroll.contentOffset.y<160)[self scrollMessagesToBottom];
+}
 - (void)sendTapped {
  if(self.restoringWorkspace){[self setStatus:@"正在恢复上次项目和会话，请稍候"];return;}
  if(self.needsConnectionValidation){[self resumeSavedConnection];return;}
