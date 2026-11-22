@@ -606,7 +606,11 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     NSArray *names = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
     NSMutableArray *summaryParts = [NSMutableArray new];
     for (NSUInteger index = 0; index < self.permissionSwitches.count && index < states.count; index++) {
-        self.permissionSwitches[index].on = states[index].boolValue;
+        UISwitch *toggle = self.permissionSwitches[index];
+        // 正在拨动或切换动画未结束时不要回写，否则会把动画从中间打断。
+        if (!toggle.isTracking && toggle.isOn != states[index].boolValue) {
+            toggle.on = states[index].boolValue;
+        }
         [summaryParts addObject:[NSString stringWithFormat:@"%@ %@", names[index],
             states[index].boolValue ? @"开" : @"关"]];
     }
@@ -684,10 +688,11 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     } else if (row == 4) {
         [FLEXAiFlexMCPServer setTracingEnabled:on];
     }
-    // 延后一拍再同步 UI：立刻 refresh 会把正在做切换动画的 UISwitch 直接改写，
+    // 等切换动画走完再同步 UI：立刻 refresh 会把正在动画中的 UISwitch 直接改写，
     // 视觉上就像“拨了又弹回去、点了没反应”。
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
 }
 
 - (void)enableAllGroupsTapped {

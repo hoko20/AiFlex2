@@ -109,10 +109,14 @@ UIVisualEffect *AXGlassEffect(void) {
 
 @end
 
+@interface AXRowView () <UIGestureRecognizerDelegate>
+@end
+
 @implementation AXRowView {
     UIView *_tile;
     UIImageView *_icon;
     UIImageView *_chevron;
+    UITapGestureRecognizer *_tap;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -173,10 +177,11 @@ UIVisualEffect *AXGlassEffect(void) {
 
     _toggle = [UISwitch new];
     _toggle.hidden = YES;
-    // 开关必须自己接收触摸：整行是 UIControl，若不显式放行，
-    // 触摸会被行控件的 tracking 收走，表现就是拨不动。
-    _toggle.userInteractionEnabled = YES;
-    _toggle.exclusiveTouch = YES;
+    // 开关完全走系统自身的触摸处理：不做任何重定向、不加 exclusiveTouch。
+    // 之前那套"整行控件抢触摸再放行开关"的做法会和 UISwitch 的 tracking 打架，
+    // 表现为拨不动或拨完弹回去。这里只保证它在栈里不被压缩变形。
+    [_toggle setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [_toggle setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [_toggle addTarget:self action:@selector(toggleFired) forControlEvents:UIControlEventValueChanged];
 
     UIStackView *trailing = [[UIStackView alloc] initWithArrangedSubviews:@[_valueLabel, _toggle, _chevron]];
@@ -209,7 +214,12 @@ UIVisualEffect *AXGlassEffect(void) {
     [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
     [_subtitleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
 
-    [self addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
+    // 整行点击用 tap 手势识别：手势观察的是整棵子树的触摸，
+    // 不会被 UIStackView/UILabel 的 hit-test 剪枝挡住，也不需要重写 hitTest 去抢触摸。
+    _tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleRowTap:)];
+    _tap.delegate = self;
+    _tap.cancelsTouchesInView = NO;
+    [self addGestureRecognizer:_tap];
     return self;
 }
 
@@ -242,9 +252,10 @@ UIVisualEffect *AXGlassEffect(void) {
         : UIColor.clearColor;
 }
 
-- (void)tapped {
+- (void)handleRowTap:(UITapGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateRecognized) return;
     if (self.onTap) { self.onTap(); return; }
-    // 开关行：点在文字或行边距上也切换，避免"只有开关那一小块能点"的手感。
+    // 开关行的其余区域也能切换，手感和系统设置一致；真正的开关点击由 UISwitch 自己处理。
     UISwitch *toggle = self.toggle;
     if (toggle && !toggle.hidden && self.onToggle) {
         BOOL next = !toggle.isOn;
@@ -253,17 +264,26 @@ UIVisualEffect *AXGlassEffect(void) {
     }
 }
 
-// 行内的文字栈、值标签、箭头都是 UIControl 的子视图，默认会把触摸吞在各自身上，
-// 结果只有行边距能点到。这里统一把落点收回到整行，只把开关自己的区域放行。
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hit = [super hitTest:point withEvent:event];
-    if (!hit || hit == self) return hit;
-    UISwitch *switchView = self.toggle;
-    if (switchView && !switchView.hidden && switchView.userInteractionEnabled) {
-        CGPoint inSwitch = [switchView convertPoint:point fromView:self];
-        if ([switchView pointInside:inSwitch withEvent:event]) return switchView;
-    }
-    return self;
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    // 手指落在开关上时放手让 UISwitch 自己处理，否则手势会抢走这次触摸。
+    if (self.toggle && !self.toggle.hidden && [touch.view isDescendantOfView:self.toggle]) return NO;
+    return YES;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    self.highlighted = YES;
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    self.highlighted = NO;
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    self.highlighted = NO;
 }
 
 - (void)toggleFired {

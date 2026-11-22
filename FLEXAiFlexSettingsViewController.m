@@ -17,6 +17,12 @@
 
 @implementation FLEXAiFlexSettingsViewController
 
+// 只在值真的不同时回写，且用户正在拨动时跳过，避免打断 UISwitch 的切换动画。
+static void AXSyncToggle(UISwitch *toggle, BOOL on) {
+    if (!toggle || toggle.isTracking || toggle.isOn == on) return;
+    toggle.on = on;
+}
+
 - (instancetype)init {
     self = [super initWithNibName:nil bundle:nil];
     if (self) self.title = @"MCP 服务";
@@ -210,7 +216,7 @@
 
 - (void)refresh {
     BOOL enabled = [FLEXAiFlexMCPServer isEnabled];
-    self.serviceRow.toggle.on = enabled;
+    AXSyncToggle(self.serviceRow.toggle, enabled);
 
     [self.portRow setValueText:[NSString stringWithFormat:@"%lu", (unsigned long)[FLEXAiFlexMCPServer port]]];
     [self.endpointRow setValueText:[FLEXAiFlexMCPServer endpoint]];
@@ -222,7 +228,7 @@
         : UIColor.secondaryLabelColor;
 
     BOOL auth = [FLEXAiFlexMCPServer authRequired];
-    self.authRow.toggle.on = auth;
+    AXSyncToggle(self.authRow.toggle, auth);
     [self.tokenRow setValueText:auth ? @"轻点复制" : @"未启用"];
     self.tokenRow.userInteractionEnabled = auth;
     self.customTokenRow.userInteractionEnabled = auth;
@@ -239,7 +245,7 @@
         @([FLEXAiFlexMCPServer tracingEnabled])
     ];
     for (NSUInteger index = 0; index < self.groupRows.count && index < states.count; index++) {
-        self.groupRows[index].toggle.on = states[index].boolValue;
+        AXSyncToggle(self.groupRows[index].toggle, states[index].boolValue);
     }
 }
 
