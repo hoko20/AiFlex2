@@ -217,7 +217,7 @@
 
     NSString *status = [FLEXAiFlexMCPServer status];
     [self.statusRow setValueText:status];
-    self.statusRow.valueLabel.textColor = [status isEqualToString:@"运行中"]
+    self.statusRow.valueLabel.textColor = [status hasPrefix:@"运行中"]
         ? UIColor.systemGreenColor
         : UIColor.secondaryLabelColor;
 

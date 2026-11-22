@@ -125,6 +125,8 @@ UIVisualEffect *AXGlassEffect(void) {
     _tile.translatesAutoresizingMaskIntoConstraints = NO;
     _tile.layer.cornerRadius = 9;
     _tile.layer.cornerCurve = kCACornerCurveContinuous;
+    // 纯展示：让触摸继续往行控件冒泡，否则点在图标上会没反应。
+    _tile.userInteractionEnabled = NO;
     [self addSubview:_tile];
 
     _icon = [UIImageView new];
@@ -147,6 +149,8 @@ UIVisualEffect *AXGlassEffect(void) {
     texts.spacing = 2;
     texts.alignment = UIStackViewAlignmentFill;
     texts.translatesAutoresizingMaskIntoConstraints = NO;
+    // UIStackView 默认自己接收触摸，会把落在文字上的点吞掉，导致只有行边距可点。
+    texts.userInteractionEnabled = NO;
     [self addSubview:texts];
 
     _valueLabel = [UILabel new];
@@ -155,6 +159,7 @@ UIVisualEffect *AXGlassEffect(void) {
     _valueLabel.textAlignment = NSTextAlignmentRight;
     _valueLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     _valueLabel.hidden = YES;
+    _valueLabel.userInteractionEnabled = NO;
     [_valueLabel setContentHuggingPriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisHorizontal];
     [_valueLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
 
@@ -163,10 +168,15 @@ UIVisualEffect *AXGlassEffect(void) {
     _chevron.tintColor = UIColor.tertiaryLabelColor;
     _chevron.contentMode = UIViewContentModeScaleAspectFit;
     _chevron.hidden = YES;
+    _chevron.userInteractionEnabled = NO;
     [_chevron.widthAnchor constraintEqualToConstant:9].active = YES;
 
     _toggle = [UISwitch new];
     _toggle.hidden = YES;
+    // 开关必须自己接收触摸：整行是 UIControl，若不显式放行，
+    // 触摸会被行控件的 tracking 收走，表现就是拨不动。
+    _toggle.userInteractionEnabled = YES;
+    _toggle.exclusiveTouch = YES;
     [_toggle addTarget:self action:@selector(toggleFired) forControlEvents:UIControlEventValueChanged];
 
     UIStackView *trailing = [[UIStackView alloc] initWithArrangedSubviews:@[_valueLabel, _toggle, _chevron]];
@@ -233,7 +243,14 @@ UIVisualEffect *AXGlassEffect(void) {
 }
 
 - (void)tapped {
-    if (self.onTap) self.onTap();
+    if (self.onTap) { self.onTap(); return; }
+    // 开关行：点在文字或行边距上也切换，避免"只有开关那一小块能点"的手感。
+    UISwitch *toggle = self.toggle;
+    if (toggle && !toggle.hidden && self.onToggle) {
+        BOOL next = !toggle.isOn;
+        [toggle setOn:next animated:YES];
+        self.onToggle(next);
+    }
 }
 
 // 行内的文字栈、值标签、箭头都是 UIControl 的子视图，默认会把触摸吞在各自身上，

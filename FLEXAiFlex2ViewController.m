@@ -562,7 +562,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (void)refresh {
     BOOL enabled = [FLEXAiFlexMCPServer isEnabled];
     NSString *state = [FLEXAiFlexMCPServer status];
-    UIColor *tint = [state isEqualToString:@"运行中"]
+    UIColor *tint = [state hasPrefix:@"运行中"]
         ? UIColor.systemGreenColor
         : (enabled ? UIColor.systemOrangeColor : UIColor.systemGrayColor);
     self.statusLabel.text = state;
@@ -684,7 +684,10 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     } else if (row == 4) {
         [FLEXAiFlexMCPServer setTracingEnabled:on];
     }
-    [self refresh];
+    // 延后一拍再同步 UI：立刻 refresh 会把正在做切换动画的 UISwitch 直接改写，
+    // 视觉上就像“拨了又弹回去、点了没反应”。
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
 }
 
 - (void)enableAllGroupsTapped {
@@ -822,7 +825,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 }
 
 - (NSDictionary *)panelStatus {
-    BOOL running = [[FLEXAiFlexMCPServer status] isEqualToString:@"运行中"];
+    BOOL running = [[FLEXAiFlexMCPServer status] hasPrefix:@"运行中"];
     return @{
         @"chatVisible": @([self panelVisible]),
         @"minimized": @(self.minimized),

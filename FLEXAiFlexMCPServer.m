@@ -152,8 +152,14 @@ static NSString *LocalIPv4(void){
 @property(nonatomic) NSUInteger startAttempt; // bounded backoff for failed binds
 @property(nonatomic) NSUInteger portFallbackHops; // how many ports we auto-skipped
 @property(nonatomic) NSInteger lastBindError; // errno of the last failed bind (0 = unknown)
+@property(nonatomic) BOOL rebinding;              // 内部重建中：端口冲突先等待旧 socket 释放，别急着顺延
+@property(nonatomic) BOOL inBackground;           // 宿主是否在后台：后台会被系统挂起，监听随之中断
+@property(nonatomic) UIBackgroundTaskIdentifier lease; // 进后台时的短时租约，只为让在途请求收尾
 - (void)accept:(nw_connection_t)connection;
 - (void)beginListening;
+- (void)restart;
+- (void)beginBackgroundLease;
+- (void)endBackgroundLease;
 + (NSString *)bindFailureText:(NSInteger)code port:(NSUInteger)port;
 - (void)read:(nw_connection_t)connection buffer:(NSMutableData *)buffer;
 - (void)process:(nw_connection_t)connection buffer:(NSMutableData *)buffer;
@@ -243,13 +249,13 @@ static NSString *LocalIPv4(void){
 + (NSString *)status{
  FLEXAiFlexMCPServer *server=[self shared];
  if(![self isEnabled])return @"未开启";
- if(server.running)return @"运行中";
+ if(server.running)return server.inBackground?@"运行中 · 后台可能暂停":@"运行中";
  if(server.lastError.length)return server.lastError;
  return @"正在启动";
 }
 + (NSString *)portNotice{return [self shared].portNotice;}
 - (instancetype)init{
- if((self=[super init])){_queue=dispatch_queue_create("flex.aiflex.mcp",DISPATCH_QUEUE_SERIAL);_connections=[NSMutableSet new];}
+ if((self=[super init])){_queue=dispatch_queue_create("flex.aiflex.mcp",DISPATCH_QUEUE_SERIAL);_connections=[NSMutableSet new];_lease=UIBackgroundTaskInvalid;}
  return self;
 }
 - (void)start{
@@ -261,8 +267,45 @@ static NSString *LocalIPv4(void){
   self.portFallbackHops=0;
   self.lastBindError=0;
   self.portNotice=nil;
+  self.rebinding=YES;
   [self beginListening];
  });
+}
+
+// 强制重建监听。系统把宿主挂起时 socket 会被回收，但 nw_listener 不一定回调
+// cancelled，running 可能仍停在 YES；此时只调 start 会被 running 挡住，
+// 表现就是面板显示"运行中"却始终连不上。回前台必须走这条路径。
+- (void)restart{
+ dispatch_async(self.queue,^{
+  if(![FLEXAiFlexMCPServer isEnabled])return;
+  self.running=NO;
+  if(self.listener){nw_listener_cancel(self.listener);self.listener=nil;}
+  // 挂起期间留下的半死连接一并清掉，否则重连会复用到已失效的 socket。
+  for(nw_connection_t connection in self.connections.allObjects)nw_connection_cancel(connection);
+  [self.connections removeAllObjects];
+  self.generation++;
+  self.startAttempt=0;
+  self.portFallbackHops=0;
+  self.lastBindError=0;
+  self.rebinding=YES;
+  [self beginListening];
+ });
+}
+
+// 进后台时向系统借一小段时间（通常 30 秒左右），让在途请求能收尾；
+// 借不到长期保活是系统限制，不是服务本身的问题。
+- (void)beginBackgroundLease{
+ if(self.lease!=UIBackgroundTaskInvalid)return;
+ __weak typeof(self) weak=self;
+ self.lease=[UIApplication.sharedApplication beginBackgroundTaskWithName:@"AiFlex2 MCP"
+   expirationHandler:^{ [weak endBackgroundLease]; }];
+}
+
+- (void)endBackgroundLease{
+ if(self.lease==UIBackgroundTaskInvalid)return;
+ UIBackgroundTaskIdentifier lease=self.lease;
+ self.lease=UIBackgroundTaskInvalid;
+ [UIApplication.sharedApplication endBackgroundTask:lease];
 }
 
 // 必须在 queue 上调用。
@@ -288,7 +331,7 @@ static NSString *LocalIPv4(void){
   FLEXAiFlexMCPServer *server=weak;if(!server)return;
   if(server.generation!=generation)return; // stale callback: ignore
   if(state==nw_listener_state_ready){
-   server.running=YES;server.lastError=@"";server.startAttempt=0;server.portFallbackHops=0;server.lastBindError=0;
+   server.running=YES;server.lastError=@"";server.startAttempt=0;server.portFallbackHops=0;server.lastBindError=0;server.rebinding=NO;
   }else if(state==nw_listener_state_failed){
    server.running=NO;
    // 绑定失败的真实原因在 nw_error 里：EADDRINUSE 说明端口被占，
@@ -321,6 +364,19 @@ static NSString *LocalIPv4(void){
  // 端口明确被占用时，等待重试没有意义（占用方不会自己让开），
  // 直接顺延；只有 errno 不明或权限类错误才退避重试。
  BOOL occupied=(self.lastBindError==EADDRINUSE);
+ // 但内部重建（回前台/手动重启）是例外：旧 listener 的 socket 往往还没释放，
+ // 这时判"端口被占"会把端口莫名顺延成 8791，App 侧存的地址就对不上了。
+ // 内部重建先在同一端口上多等几拍，等旧 socket 释放。
+ if(occupied&&self.rebinding&&self.startAttempt<6){
+  NSUInteger attempt=++self.startAttempt;
+  __weak typeof(self) weak=self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*attempt*NSEC_PER_SEC)),self.queue,^{
+   FLEXAiFlexMCPServer *server=weak;if(!server||server.generation!=generation||server.running)return;
+   if(server.listener){nw_listener_cancel(server.listener);server.listener=nil;}
+   [server beginListening];
+  });
+  return;
+ }
  if(!occupied&&self.startAttempt<4){
   NSUInteger attempt=++self.startAttempt;
   __weak typeof(self) weak=self;
@@ -334,6 +390,8 @@ static NSString *LocalIPv4(void){
  // 顺延到后面的端口，并把配置写回，面板上的访问地址会跟着变成新端口，
  // 不用用户手动去设置里改。
  if((occupied||self.lastBindError==0)&&self.portFallbackHops<10){
+  // 内部重建的等待机会已经用尽，说明端口是真的被别的进程占着，转顺延。
+  self.rebinding=NO;
   NSUInteger current=[FLEXAiFlexMCPServer port];
   NSUInteger next=current+1;
   if(next>=1024&&next<=65535){
@@ -361,6 +419,7 @@ static NSString *LocalIPv4(void){
   if(self.listener){nw_listener_cancel(self.listener);self.listener=nil;}
   for(nw_connection_t connection in self.connections.allObjects)nw_connection_cancel(connection);
   [self.connections removeAllObjects];self.running=NO;
+  [self endBackgroundLease];
  });
 }
 - (BOOL)privateConnection:(nw_connection_t)connection{
@@ -599,15 +658,33 @@ static NSString *LocalIPv4(void){
 __attribute__((constructor)) static void FLEXAiFlexMCPBoot(void){
  if(![FLEXAiFlexMCPServer isEnabled])return;
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[[FLEXAiFlexMCPServer shared] start];});
- // 回到前台时监听常常已经被系统回收（listener cancelled），running 变 NO 后
- // 没有任何路径再拉起来，面板就停在"无法监听"。这里只在没跑起来时补一次自愈，
- // 不会打断正在工作的服务。
+ // 回到前台时监听常常已经被系统回收（socket 被挂起时断开），但 running 未必变 NO。
+ // 所以这里不看 running，直接强制重建一次，避免"面板显示运行中却连不上"。
+ [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification
+                                                 object:nil
+                                                  queue:NSOperationQueue.mainQueue
+                                             usingBlock:^(__unused NSNotification *note){
+  FLEXAiFlexMCPServer *server=[FLEXAiFlexMCPServer shared];
+  server.inBackground=NO;
+  [server endBackgroundLease];
+  if(![FLEXAiFlexMCPServer isEnabled])return;
+  [server restart];
+ }];
+ // 进后台借一小段执行时间给在途请求收尾；借不到就交给系统挂起，回前台再重建。
+ [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                 object:nil
+                                                  queue:NSOperationQueue.mainQueue
+                                             usingBlock:^(__unused NSNotification *note){
+  FLEXAiFlexMCPServer *server=[FLEXAiFlexMCPServer shared];
+  server.inBackground=YES;
+  [server beginBackgroundLease];
+ }];
  [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
                                                  object:nil
                                                   queue:NSOperationQueue.mainQueue
                                              usingBlock:^(__unused NSNotification *note){
   FLEXAiFlexMCPServer *server=[FLEXAiFlexMCPServer shared];
   if(![FLEXAiFlexMCPServer isEnabled]||server.running)return;
-  [server start];
+  [server restart];
  }];
 }
