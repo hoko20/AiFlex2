@@ -6,6 +6,7 @@
 #import "FLEXManager+Private.h"
 #import "FLEXUtility.h"
 #import "FLEXAiFlex2UI.h"
+#import "FLEXDylixChatViewController.h"
 
 static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
@@ -464,6 +465,14 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (AXGlassCard *)buildActionsCard {
     __weak typeof(self) weakSelf = self;
 
+    // 宿主内对话：聊天界面和轮询都留在当前进程里，AI 推理仍在 App 侧。
+    // 这样用户在宿主里就能看回复、看效果，不必来回切换导致进程被挂起。
+    AXRowView *chat = [self rowTitle:@"AI 对话（宿主内运行）"
+                            subtitle:@"聊天与工具执行都在当前 App 内，App 侧同一会话可见"
+                              symbol:@"bubble.left.and.bubble.right.fill" tint:UIColor.systemIndigoColor];
+    [chat setShowsChevron:YES];
+    chat.onTap = ^{ [weakSelf openChat]; };
+
     AXRowView *config = [self rowTitle:@"复制 MCP 客户端配置" subtitle:nil
                                 symbol:@"square.on.square" tint:UIColor.systemBlueColor];
     [config setShowsChevron:YES];
@@ -491,7 +500,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     [collapse setShowsChevron:YES];
     collapse.onTap = ^{ [weakSelf collapseTapped]; };
 
-    return [self cardWithRows:@[config, enable, settings, restart, collapse] radius:22];
+    return [self cardWithRows:@[chat, config, enable, settings, restart, collapse] radius:22];
 }
 
 - (UIView *)buildPermissionCard {
@@ -770,6 +779,15 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 - (void)openSettings {
     [self.navigationController pushViewController:[FLEXAiFlexSettingsViewController new] animated:YES];
+}
+
+- (void)openChat {
+    FLEXDylixChatViewController *chat =
+        [[FLEXDylixChatViewController alloc] initWithReport:self.report className:self.className];
+    chat.selectedObject = self.selectedObject;
+    __weak typeof(self) weakSelf = self;
+    chat.reportProvider = ^NSString *{ return weakSelf.report ?: @""; };
+    [self.navigationController pushViewController:chat animated:YES];
 }
 
 - (void)restartService {
