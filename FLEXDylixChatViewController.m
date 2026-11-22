@@ -92,6 +92,9 @@ static NSString *DXChatContent(id content) {
 @property NSMutableArray<NSMutableDictionary *> *messages;
 @property NSMutableDictionary *liveMessage;
 @property UIButton *connectButton, *permissionButton, *projectButton, *modelButton, *sessionButton, *sendButton;
+// 顶部状态行里的两个常驻开关：自动允许、屏幕常亮。默认都关，点亮表示已开启。
+@property UIButton *autoApproveButton, *keepAwakeButton;
+@property BOOL keepAwake;
 @property NSMutableDictionary<NSString *,NSString *> *drafts;
 @property NSUInteger sessionLoadGeneration, missedHeartbeats;
 @property (nonatomic) BOOL busy;
@@ -143,7 +146,7 @@ static NSString *DXChatContent(id content) {
  [self refreshAgentStatus];
 }
 - (instancetype)initWithReport:(NSString *)report className:(NSString *)className {
- if ((self=[super init])) { DXCurrentChat=self; _report=[report copy]?:@""; _className=[className copy]?:@"未知对象"; [FLEXAiFlexRuntime sharedRuntime].contextReport=_report;[FLEXAiFlexRuntime sharedRuntime].contextClassName=_className; _messages=[NSMutableArray new]; _drafts=[NSMutableDictionary new];_activeToolOperations=[NSMutableDictionary new]; _autoApprove=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.AutoApprove.v1"]; [self restoreConnection];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationWillResignActiveNotification object:nil]; }
+ if ((self=[super init])) { DXCurrentChat=self; _report=[report copy]?:@""; _className=[className copy]?:@"未知对象"; [FLEXAiFlexRuntime sharedRuntime].contextReport=_report;[FLEXAiFlexRuntime sharedRuntime].contextClassName=_className; _messages=[NSMutableArray new]; _drafts=[NSMutableDictionary new];_activeToolOperations=[NSMutableDictionary new]; _autoApprove=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.AutoApprove.v1"]; _keepAwake=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.KeepAwake.v1"]; [self restoreConnection];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationWillResignActiveNotification object:nil]; }
  return self;
 }
 - (void)restoreConnection {
@@ -265,6 +268,7 @@ static NSString *DXChatContent(id content) {
  ]];
  if(!self.messages.count)[self.messages addObject:[@{@"role":@"tip",@"text":@"选中 FLEX 对象后直接提问。AI 可读取现场报告，并按权限调用实时工具。"} mutableCopy]];
  [self updateSessionButton];[self showConnectionState:self.csrf.length?(self.connectionState?:1):0];
+ [self updateToggleButtons];[self applyKeepAwake];
  [self renderMessages];
 }
 
@@ -309,8 +313,13 @@ static NSString *DXChatContent(id content) {
  self.connectButton=[self iconButton:@"gearshape" action:@selector(connectTapped) label:@"连接设置"];
  self.permissionButton=[self iconButton:@"lock.shield" action:@selector(permissionTapped) label:@"工具权限"];
  UIButton *mcpButton=[self iconButton:@"network" action:@selector(mcpTapped) label:@"MCP 服务"];
+ // 两个常驻开关放在地球（MCP）图标前面：不进会话弹窗也能提前打开，点亮即生效。
+ self.autoApproveButton=[self iconButton:@"hand.raised" action:@selector(autoApproveTapped) label:@"自动允许 AI 操作"];
+ self.autoApproveButton.accessibilityHint=@"点亮后 AI 的写入、构建、现场操作不再逐次弹窗确认";
+ self.keepAwakeButton=[self iconButton:@"sun.max" action:@selector(keepAwakeTapped) label:@"屏幕常亮"];
+ self.keepAwakeButton.accessibilityHint=@"点亮后本机不会自动锁屏，避免长任务被系统挂起";
 
- UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,mcpButton,self.permissionButton,self.connectButton]];
+ UIStackView *statusRow=[[UIStackView alloc]initWithArrangedSubviews:@[self.statusDot,self.statusLabel,self.autoApproveButton,self.keepAwakeButton,mcpButton,self.permissionButton,self.connectButton]];
  statusRow.axis=UILayoutConstraintAxisHorizontal;
  statusRow.spacing=6;
  statusRow.alignment=UIStackViewAlignmentCenter;
@@ -358,6 +367,8 @@ static NSString *DXChatContent(id content) {
   [statusRow.topAnchor constraintEqualToAnchor:header.topAnchor constant:10],[statusRow.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:12],[statusRow.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-12],
   [self.connectButton.widthAnchor constraintEqualToConstant:32],[self.connectButton.heightAnchor constraintEqualToConstant:30],
   [self.permissionButton.widthAnchor constraintEqualToConstant:32],[self.permissionButton.heightAnchor constraintEqualToConstant:30],
+  [self.autoApproveButton.widthAnchor constraintEqualToConstant:32],[self.autoApproveButton.heightAnchor constraintEqualToConstant:30],
+  [self.keepAwakeButton.widthAnchor constraintEqualToConstant:32],[self.keepAwakeButton.heightAnchor constraintEqualToConstant:30],
   [mcpButton.widthAnchor constraintEqualToConstant:32],[mcpButton.heightAnchor constraintEqualToConstant:30],
   [selectors.topAnchor constraintEqualToAnchor:statusRow.bottomAnchor constant:4],[selectors.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[selectors.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[selectors.heightAnchor constraintEqualToConstant:32],
   [metaRow.topAnchor constraintEqualToAnchor:selectors.bottomAnchor constant:4],[metaRow.leadingAnchor constraintEqualToAnchor:statusRow.leadingAnchor],[metaRow.trailingAnchor constraintEqualToAnchor:statusRow.trailingAnchor],[metaRow.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-10]
@@ -572,7 +583,7 @@ static NSString *DXChatContent(id content) {
  }];
 }
 - (void)textViewDidChange:(UITextView *)textView {self.inputPlaceholder.hidden=textView.text.length>0;CGFloat height=MIN(150,MAX(44,[textView sizeThatFits:CGSizeMake(textView.bounds.size.width,CGFLOAT_MAX)].height));if(fabs(height-self.inputHeight.constant)>0.5)self.inputHeight.constant=height;}
-- (void)applicationStateChanged:(NSNotification *)note {self.statusSuspended=[note.name isEqual:UIApplicationWillResignActiveNotification];[self refreshAgentStatus];}
+- (void)applicationStateChanged:(NSNotification *)note {self.statusSuspended=[note.name isEqual:UIApplicationWillResignActiveNotification];if(!self.statusSuspended)[self applyKeepAwake];[self refreshAgentStatus];}
 - (NSString *)phaseForOperation:(NSString *)operation {
  NSDictionary *names=@{@"gesture":@"正在操作页面",@"activate_control":@"正在点击控件",@"scroll_view":@"正在滚动页面",@"set_view":@"正在调整视图",@"undo":@"正在恢复视图",@"input_text":@"正在输入文字",@"set_control_value":@"正在调整控件",@"capture_screen":@"正在截图观察",@"screen_elements":@"正在读取控件",@"view_tree":@"正在读取视图树",@"object_info":@"正在核对对象",@"class_info":@"正在核对类信息",@"class_header":@"正在读取头文件",@"minimize_chat":@"正在收起会话",@"restore_chat":@"正在恢复会话",@"open_tool":@"正在打开 FLEX 工具",@"select_row":@"正在操作 FLEX 页面",@"flex_scroll":@"正在滚动 FLEX 页面",@"set_search":@"正在搜索 FLEX 页面",@"navigate_back":@"正在返回 FLEX 页面",@"dismiss_tool":@"正在关闭 FLEX 页面",@"build_project":@"正在本机构建",@"read_file":@"正在读取项目文件",@"list_artifacts":@"正在检查构建产物",@"list_session_files":@"正在读取会话文件"};
  return names[operation]?:[NSString stringWithFormat:@"正在执行工具 · %@",operation?:@"未知工具"];
@@ -661,7 +672,7 @@ static NSString *DXChatContent(id content) {
 }
 - (NSDictionary *)chatWindowStatus {
  BOOL visible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!self.navigationController.isBeingDismissed;
- return @{@"chatVisible":@(visible),@"minimized":@(self.chatMinimized),@"connected":@(self.connectionState==2&&!self.needsConnectionValidation&&self.missedHeartbeats<2),@"taskRunning":@(self.busy),@"stopped":@(self.agentStopped),@"sessionID":self.sessionID?:@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(!visible&&FLEXManager.sharedManager.isHidden&&!self.uiTransitioning),@"statusVisible":@(self.statusWindow&&!self.statusWindow.hidden),@"autoApprove":@(self.autoApprove),@"activity":self.taskPhase?:@"",@"uiTransitioning":@(self.uiTransitioning)};
+ return @{@"chatVisible":@(visible),@"minimized":@(self.chatMinimized),@"connected":@(self.connectionState==2&&!self.needsConnectionValidation&&self.missedHeartbeats<2),@"taskRunning":@(self.busy),@"stopped":@(self.agentStopped),@"sessionID":self.sessionID?:@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(!visible&&FLEXManager.sharedManager.isHidden&&!self.uiTransitioning),@"statusVisible":@(self.statusWindow&&!self.statusWindow.hidden),@"autoApprove":@(self.autoApprove),@"keepAwake":@(self.keepAwake),@"activity":self.taskPhase?:@"",@"uiTransitioning":@(self.uiTransitioning)};
 }
 - (void)minimizeChat:(BOOL)target completion:(dispatch_block_t)completion {
  [self.view endEditing:YES];[self rememberConnectionNow];
@@ -946,12 +957,45 @@ static NSString *DXChatContent(id content) {
  }];
 }
 - (void)setAutoApproveEnabled:(BOOL)enabled {
- if(self.autoApprove==enabled)return;
+ if(self.autoApprove==enabled){[self updateToggleButtons];return;}
  self.autoApprove=enabled;
  [NSUserDefaults.standardUserDefaults setBool:enabled forKey:@"FLEX.AiFlex2.AutoApprove.v1"];
  [NSUserDefaults.standardUserDefaults synchronize];
  [self setStatus:enabled?@"已开启自动允许：AI 的操作不再逐次确认":@"已关闭自动允许：AI 的操作会重新弹窗确认"];
+ [self updateToggleButtons];
  [self refreshAgentStatus];
+}
+// 点亮的按钮用蓝色描边+淡蓝底，和顶部其它灰色图标区分开；关掉就完全回到灰色。
+- (void)styleToggleButton:(UIButton *)button on:(BOOL)on {
+ button.tintColor=on?UIColor.systemBlueColor:UIColor.secondaryLabelColor;
+ button.backgroundColor=on?[UIColor.systemBlueColor colorWithAlphaComponent:0.16]:UIColor.clearColor;
+ button.layer.cornerRadius=9;
+ button.accessibilityValue=on?@"已开启":@"已关闭";
+}
+- (void)updateToggleButtons {
+ UIImage *autoImage=[UIImage systemImageNamed:self.autoApprove?@"hand.raised.slash":@"hand.raised"];
+ if(!autoImage)autoImage=[UIImage systemImageNamed:@"checkmark.circle"]; // 旧系统缺符号时留个可见的兜底
+ [self.autoApproveButton setImage:autoImage forState:UIControlStateNormal];
+ [self styleToggleButton:self.autoApproveButton on:self.autoApprove];
+ [self.keepAwakeButton setImage:[UIImage systemImageNamed:self.keepAwake?@"sun.max.fill":@"sun.max"] forState:UIControlStateNormal];
+ [self styleToggleButton:self.keepAwakeButton on:self.keepAwake];
+}
+- (void)applyKeepAwake {
+ // 只影响本机屏幕自动锁定；关掉立刻交还给系统。
+ UIApplication.sharedApplication.idleTimerDisabled=self.keepAwake;
+ [self updateToggleButtons];
+}
+- (void)autoApproveTapped {
+ UIImpactFeedbackGenerator *feedback=[[UIImpactFeedbackGenerator alloc]initWithStyle:UIImpactFeedbackStyleLight];[feedback impactOccurred];
+ [self setAutoApproveEnabled:!self.autoApprove];
+}
+- (void)keepAwakeTapped {
+ UIImpactFeedbackGenerator *feedback=[[UIImpactFeedbackGenerator alloc]initWithStyle:UIImpactFeedbackStyleLight];[feedback impactOccurred];
+ self.keepAwake=!self.keepAwake;
+ [NSUserDefaults.standardUserDefaults setBool:self.keepAwake forKey:@"FLEX.AiFlex2.KeepAwake.v1"];
+ [NSUserDefaults.standardUserDefaults synchronize];
+ [self applyKeepAwake];
+ [self setStatus:self.keepAwake?@"已开启屏幕常亮：不会自动锁屏":@"已关闭屏幕常亮：恢复系统自动锁屏"];
 }
 - (void)acceptJob:(NSString *)identifier nonce:(NSString *)nonce completion:(DXChatReply)completion {
  [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@YES} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
