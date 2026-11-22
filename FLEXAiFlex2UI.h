@@ -125,6 +125,7 @@ FOUNDATION_EXPORT AXGlassAlert * _Nullable AXPresentForm(UIViewController *host,
 @property (nonatomic, copy, readonly) NSString *title;
 @property (nonatomic, copy, readonly, nullable) NSString *subtitle;
 @property (nonatomic, assign) BOOL selected;
+@property (nonatomic, assign) BOOL destructive;   // 红字，用于删除/断开一类不可撤销操作
 + (instancetype)itemWithTitle:(NSString *)title subtitle:(nullable NSString *)subtitle;
 @end
 
