@@ -1,6 +1,7 @@
 #import "FLEXAiFlexMCPServer.h"
 #import "FLEXAiFlexRuntime.h"
 #import "FLEXAiFlex2ViewController.h"
+#import "FLEXDylixChatViewController.h"
 #import "FLEXManager+Private.h"
 #import <Network/Network.h>
 #import <Security/Security.h>
@@ -607,6 +608,15 @@ static NSString *LocalIPv4(void){
  }
  if(WindowOperation(operation)){
   dispatch_async(dispatch_get_main_queue(),^{
+   // 聊天页优先：宿主内对话开着时，minimize_chat/restore_chat 应该作用在聊天窗上，
+   // 而不是背后的面板，否则 AI 想最小化聊天界面却收起了面板。
+   FLEXDylixChatViewController *chat=[FLEXDylixChatViewController dylixCurrentChat];
+   if(chat){
+    [chat performWindowOperation:operation arguments:wire completion:^(NSDictionary *result,NSString *error){
+     dispatch_async(self.queue,^{completion(error.length?ToolError(error):FlexContent(result));});
+    }];
+    return;
+   }
    FLEXAiFlex2ViewController *panel=[FLEXAiFlex2ViewController aiFlex2CurrentPanel];
    if(!panel){
     if([operation isEqual:@"chat_status"]){
