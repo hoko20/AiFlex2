@@ -102,6 +102,8 @@ typedef NS_ENUM(NSInteger, AXAlertFieldKind) {
 @property (nonatomic, strong, readonly, nullable) UITextField *textField; // 无输入框时为 nil
 @property (nonatomic, copy, readonly) NSString *text;                     // 输入框内容，无输入框为空串
 @property (nonatomic, copy, readonly) NSArray<NSString *> *values;         // 多输入框时按顺序取，单输入框为 @[text]
+@property (nonatomic, copy, readonly, nullable) NSString *toggleTitle;     // 无开关行时为 nil
+@property (nonatomic, readonly) BOOL toggleOn;                             // 开关当前状态
 - (void)dismiss;
 @end
 
@@ -112,6 +114,15 @@ FOUNDATION_EXPORT AXGlassAlert * _Nullable AXPresentAlert(UIViewController *host
                                                           AXAlertMessageStyle messageStyle,
                                                           void (^ _Nullable configureTextField)(UITextField *field),
                                                           NSArray<AXAlertButton *> *buttons);
+
+// 带一行开关的版本：用于「本次会话自动允许」这类需要在确认时就地切换的选项。
+FOUNDATION_EXPORT AXGlassAlert * _Nullable AXPresentAlertWithToggle(UIViewController *host,
+                                                                    NSString * _Nullable title,
+                                                                    NSString * _Nullable message,
+                                                                    AXAlertMessageStyle messageStyle,
+                                                                    NSString *toggleTitle,
+                                                                    BOOL toggleOn,
+                                                                    NSArray<AXAlertButton *> *buttons);
 
 // 多输入框版本：字段顺序与 fields 一致，结果从 alert.values 取。
 FOUNDATION_EXPORT AXGlassAlert * _Nullable AXPresentForm(UIViewController *host,

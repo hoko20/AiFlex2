@@ -529,6 +529,9 @@ static NSMutableArray *AXVisibleAlerts(void) {
 @property (nonatomic, strong) NSLayoutConstraint *centerConstraint;
 @property (nonatomic, copy) NSArray<AXAlertButton *> *buttons;
 @property (nonatomic, assign) BOOL dismissing;
+@property (nonatomic, strong, nullable) UISwitch *toggle;
+@property (nonatomic, copy, nullable) NSString *toggleTitle;
+@property (nonatomic, assign) BOOL toggleValue;
 - (instancetype)initWithTitle:(NSString *)title
                       message:(NSString *)message
                  messageStyle:(AXAlertMessageStyle)messageStyle
@@ -538,6 +541,13 @@ static NSMutableArray *AXVisibleAlerts(void) {
                       message:(NSString *)message
                  messageStyle:(AXAlertMessageStyle)messageStyle
                         fields:(NSArray<AXAlertField *> *)fields
+                       buttons:(NSArray<AXAlertButton *> *)buttons;
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                 messageStyle:(AXAlertMessageStyle)messageStyle
+                        fields:(NSArray<AXAlertField *> *)fields
+                   toggleTitle:(NSString *)toggleTitle
+                      toggleOn:(BOOL)toggleOn
                        buttons:(NSArray<AXAlertButton *> *)buttons;
 @end
 
@@ -565,9 +575,27 @@ static NSMutableArray *AXVisibleAlerts(void) {
                  messageStyle:(AXAlertMessageStyle)messageStyle
                         fields:(NSArray<AXAlertField *> *)fields
                        buttons:(NSArray<AXAlertButton *> *)buttons {
+    return [self initWithTitle:title
+                       message:message
+                  messageStyle:messageStyle
+                        fields:fields
+                   toggleTitle:nil
+                      toggleOn:NO
+                       buttons:buttons];
+}
+
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                 messageStyle:(AXAlertMessageStyle)messageStyle
+                        fields:(NSArray<AXAlertField *> *)fields
+                   toggleTitle:(NSString *)toggleTitle
+                      toggleOn:(BOOL)toggleOn
+                       buttons:(NSArray<AXAlertButton *> *)buttons {
     self = [super init];
     if (!self) return nil;
     _buttons = [buttons copy] ?: @[];
+    _toggleTitle = [toggleTitle copy];
+    _toggleValue = toggleOn;
 
     _overlay = [UIView new];
     _overlay.translatesAutoresizingMaskIntoConstraints = NO;
@@ -702,6 +730,35 @@ static NSMutableArray *AXVisibleAlerts(void) {
         }
         _fields = built.copy;
         _textField = built.firstObject;
+    }
+
+    if (_toggleTitle.length) {
+        UIView *row = [UIView new];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        UILabel *label = [UILabel new];
+        label.text = _toggleTitle;
+        label.font = [UIFont systemFontOfSize:14];
+        label.textColor = UIColor.labelColor;
+        label.numberOfLines = 0;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        UISwitch *toggle = [UISwitch new];
+        toggle.on = toggleOn;
+        toggle.translatesAutoresizingMaskIntoConstraints = NO;
+        [toggle addTarget:self action:@selector(toggleChanged:)
+         forControlEvents:UIControlEventValueChanged];
+        [row addSubview:label];
+        [row addSubview:toggle];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+            [label.topAnchor constraintEqualToAnchor:row.topAnchor constant:4],
+            [label.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-4],
+            [label.trailingAnchor constraintLessThanOrEqualToAnchor:toggle.leadingAnchor constant:-12],
+            [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+            [toggle.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [row.heightAnchor constraintGreaterThanOrEqualToConstant:34]
+        ]];
+        _toggle = toggle;
+        [content addObject:row];
     }
 
     if (_buttons.count) {
@@ -858,6 +915,15 @@ static NSMutableArray *AXVisibleAlerts(void) {
     return list;
 }
 
+- (BOOL)toggleOn {
+    return self.toggle ? self.toggle.isOn : self.toggleValue;
+}
+
+- (void)toggleChanged:(UISwitch *)sender {
+    self.toggleValue = sender.isOn;
+    AXFeedback(UIImpactFeedbackStyleLight);
+}
+
 - (void)present {
     UIWindow *window = self.overlay.superview.window ?: self.card.window;
     if (!window) return;
@@ -954,6 +1020,22 @@ AXGlassAlert *AXPresentAlert(UIViewController *host,
                                                            message:message
                                                       messageStyle:messageStyle
                                                 configureTextField:configureTextField
+                                                           buttons:buttons]);
+}
+
+AXGlassAlert *AXPresentAlertWithToggle(UIViewController *host,
+                                       NSString *title,
+                                       NSString *message,
+                                       AXAlertMessageStyle messageStyle,
+                                       NSString *toggleTitle,
+                                       BOOL toggleOn,
+                                       NSArray<AXAlertButton *> *buttons) {
+    return AXInstallAlert(host, [[AXGlassAlert alloc] initWithTitle:title
+                                                           message:message
+                                                      messageStyle:messageStyle
+                                                            fields:@[]
+                                                       toggleTitle:toggleTitle
+                                                          toggleOn:toggleOn
                                                            buttons:buttons]);
 }
 

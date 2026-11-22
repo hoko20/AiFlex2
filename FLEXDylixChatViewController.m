@@ -120,6 +120,8 @@ static NSString *DXChatContent(id content) {
 @property NSTimeInterval lastRemember;
 @property BOOL waitingApproval;
 @property BOOL statusSuspended;
+// 打开后本次会话不再弹确认框，AI 申请的操作直接放行；默认关闭，随会话持久化。
+@property BOOL autoApprove;
 @property NSError *lastConnectionError;
 @end
 
@@ -132,7 +134,7 @@ static NSString *DXChatContent(id content) {
  [self refreshAgentStatus];
 }
 - (instancetype)initWithReport:(NSString *)report className:(NSString *)className {
- if ((self=[super init])) { DXCurrentChat=self; _report=[report copy]?:@""; _className=[className copy]?:@"未知对象"; [FLEXAiFlexRuntime sharedRuntime].contextReport=_report;[FLEXAiFlexRuntime sharedRuntime].contextClassName=_className; _messages=[NSMutableArray new]; _drafts=[NSMutableDictionary new];_activeToolOperations=[NSMutableDictionary new]; [self restoreConnection];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationWillResignActiveNotification object:nil]; }
+ if ((self=[super init])) { DXCurrentChat=self; _report=[report copy]?:@""; _className=[className copy]?:@"未知对象"; [FLEXAiFlexRuntime sharedRuntime].contextReport=_report;[FLEXAiFlexRuntime sharedRuntime].contextClassName=_className; _messages=[NSMutableArray new]; _drafts=[NSMutableDictionary new];_activeToolOperations=[NSMutableDictionary new]; _autoApprove=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.AutoApprove.v1"]; [self restoreConnection];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationWillResignActiveNotification object:nil]; }
  return self;
 }
 - (void)restoreConnection {
@@ -426,7 +428,15 @@ static NSString *DXChatContent(id content) {
  [self refreshAgentStatus];
 }
 - (void)statusTapped {
- if(self.connectionState==2){[self setStatus:@"连接正常"];return;}
+ if(self.connectionState==2){
+  NSString *autoTitle=self.autoApprove?@"关闭自动允许（当前已开）":@"开启自动允许（不再逐次确认）";
+  AXPresentAlert(self,@"AI 会话",@"自动允许只作用于本机这个会话：打开后 AI 申请的写入、构建、FLEX 现场操作会直接执行，不再弹确认框；随时可以在这里关掉。",AXAlertMessageStyleText,nil,@[
+   [AXAlertButton buttonWithTitle:autoTitle style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *action){[self setAutoApproveEnabled:!self.autoApprove];}],
+   [AXAlertButton buttonWithTitle:@"收起为悬浮球" style:AXAlertButtonStyleSecondary handler:^(AXGlassAlert *action){[self minimizeChat:NO completion:^{}];}],
+   [AXAlertButton buttonWithTitle:@"关闭" style:AXAlertButtonStyleCancel handler:nil]
+  ]);
+  return;
+ }
  if(self.token.length){self.needsConnectionValidation=YES;self.lastValidateFailure=0;[self resumeSavedConnection];return;}
  [self connectTapped];
 }
@@ -556,12 +566,17 @@ static NSString *DXChatContent(id content) {
  return [@[@"gesture",@"activate_control",@"scroll_view",@"set_view",@"undo",@"input_text",@"set_control_value",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"flex_scroll",@"set_search"] containsObject:operation];
 }
 - (void)refreshAgentStatus {
- BOOL show=self.chatMinimized&&self.csrf.length&&!self.statusSuspended&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+ // 只要会话不在屏幕上（收起、被 FLEX 其它页面顶掉、或整个 FLEX 面板关掉），
+ // 已连接就应该有这个悬浮球；之前只认 chatMinimized，从别处关掉面板就再也看不到它。
+ BOOL chatVisible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!self.navigationController.isBeingDismissed;
+ BOOL show=self.csrf.length&&!chatVisible&&!self.statusSuspended&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
  if(show&&!self.statusWindow){
-  if(@available(iOS 13.0,*)){UIWindowScene *scene=FLEXUtility.appKeyWindow.windowScene;if(scene)self.statusWindow=[[FLEXDylixStatusWindow alloc]initWithWindowScene:scene];}
+  UIWindowScene *scene=[FLEXDylixStatusWindow activeScene];
+  if(scene)self.statusWindow=[[FLEXDylixStatusWindow alloc]initWithWindowScene:scene];
   if(!self.statusWindow)self.statusWindow=[[FLEXDylixStatusWindow alloc]initWithFrame:UIScreen.mainScreen.bounds];
   __weak typeof(self) weak=self;self.statusWindow.openChat=^{typeof(self) chat=weak;if(!chat||chat.uiTransitioning)return;chat.uiTransitioning=YES;[chat restoreChatWithCompletion:^{chat.uiTransitioning=NO;}];};
  }
+ if(show)[self.statusWindow attachToBestScene];
  BOOL control=[self isScreenControl:self.localOperation];for(NSString *op in self.activeToolOperations.allValues)if([self isScreenControl:op])control=YES;
  BOOL running=self.busy||self.localOperation.length||self.activeToolOperations.count;
  NSString *title=@"AiFlex2 AI · 已连接",*detail=@"轻点返回会话";UIColor *color=UIColor.systemGreenColor;
@@ -577,6 +592,7 @@ static NSString *DXChatContent(id content) {
  else if([self.idleStatus isEqual:@"回复完成"]){title=@"AiFlex2 AI · 回复完成";detail=@"回复完成";}
  else detail=self.idleStatus?:@"就绪";
  if(control)detail=[@"请勿触屏 · " stringByAppendingString:detail];
+ if(self.autoApprove)detail=[@"自动允许 · " stringByAppendingString:detail];
  if(self.captureStatus.length)detail=[detail stringByAppendingFormat:@"\n%@",self.captureStatus];
  self.activityLabel.text=detail;self.activityLabel.textColor=color;self.activityLabel.accessibilityLabel=detail;
  if(!show){self.statusWindow.hidden=YES;return;}
@@ -610,7 +626,7 @@ static NSString *DXChatContent(id content) {
 }
 - (NSDictionary *)chatWindowStatus {
  BOOL visible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!self.navigationController.isBeingDismissed;
- return @{@"chatVisible":@(visible),@"minimized":@(self.chatMinimized),@"connected":@(self.connectionState==2&&!self.needsConnectionValidation&&self.missedHeartbeats<2),@"taskRunning":@(self.busy),@"stopped":@(self.agentStopped),@"sessionID":self.sessionID?:@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(!visible&&FLEXManager.sharedManager.isHidden&&!self.uiTransitioning),@"statusVisible":@(self.statusWindow&&!self.statusWindow.hidden),@"activity":self.taskPhase?:@"",@"uiTransitioning":@(self.uiTransitioning)};
+ return @{@"chatVisible":@(visible),@"minimized":@(self.chatMinimized),@"connected":@(self.connectionState==2&&!self.needsConnectionValidation&&self.missedHeartbeats<2),@"taskRunning":@(self.busy),@"stopped":@(self.agentStopped),@"sessionID":self.sessionID?:@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(!visible&&FLEXManager.sharedManager.isHidden&&!self.uiTransitioning),@"statusVisible":@(self.statusWindow&&!self.statusWindow.hidden),@"autoApprove":@(self.autoApprove),@"activity":self.taskPhase?:@"",@"uiTransitioning":@(self.uiTransitioning)};
 }
 - (void)minimizeChat:(BOOL)target completion:(dispatch_block_t)completion {
  [self.view endEditing:YES];[self rememberConnectionNow];
@@ -871,6 +887,17 @@ static NSString *DXChatContent(id content) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[self waitJob:identifier completion:completion];});
  }];
 }
+- (void)setAutoApproveEnabled:(BOOL)enabled {
+ if(self.autoApprove==enabled)return;
+ self.autoApprove=enabled;
+ [NSUserDefaults.standardUserDefaults setBool:enabled forKey:@"FLEX.AiFlex2.AutoApprove.v1"];
+ [NSUserDefaults.standardUserDefaults synchronize];
+ [self setStatus:enabled?@"已开启自动允许：AI 的操作不再逐次确认":@"已关闭自动允许：AI 的操作会重新弹窗确认"];
+ [self refreshAgentStatus];
+}
+- (void)acceptJob:(NSString *)identifier nonce:(NSString *)nonce completion:(DXChatReply)completion {
+ [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@YES} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
+}
 - (void)confirmJob:(NSDictionary *)job completion:(DXChatReply)completion {
  NSString *identifier=job[@"id"],*nonce=job[@"nonce"];if(!identifier.length||!nonce.length){completion(nil,DXChatError(@"确认请求无效"));return;}
  NSTimeInterval expiry=[job[@"expiresAt"] isKindOfClass:NSNumber.class]?[job[@"expiresAt"] doubleValue]:0;
@@ -878,13 +905,23 @@ static NSString *DXChatContent(id content) {
  if(!self.csrf.length||NSDate.date.timeIntervalSince1970>=expiry){completion(nil,DXChatError(@"AiFlex2 操作确认已过期"));return;}
  __block BOOL settled=NO;
  NSString *message=[@[job[@"confirmation"][@"summary"]?:@"AI 请求执行操作",job[@"confirmation"][@"details"]?:@""] componentsJoinedByString:@"\n\n"];
- AXGlassAlert *alert=AXPresentAlert(self,@"确认 AiFlex2 操作",message,AXAlertMessageStyleText,nil,@[
+ // 自动允许：不再停在弹窗上，直接回执放行，状态栏留一句痕迹说明刚放行了什么。
+ if(self.autoApprove){
+  NSString *summary=job[@"confirmation"][@"summary"]?:@"AI 操作";
+  self.waitingApproval=NO;
+  [self setStatus:[NSString stringWithFormat:@"自动允许：%@",summary]];
+  [self acceptJob:identifier nonce:nonce completion:completion];
+  return;
+ }
+ AXGlassAlert *alert=AXPresentAlertWithToggle(self,@"确认 AiFlex2 操作",message,AXAlertMessageStyleText,@"本次会话内自动允许后续操作",self.autoApprove,@[
   [AXAlertButton buttonWithTitle:@"允许" style:AXAlertButtonStylePrimary handler:^(AXGlassAlert *action){
    if(settled)return;settled=YES;
-   [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@YES} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
+   [self setAutoApproveEnabled:action.toggleOn];
+   [self acceptJob:identifier nonce:nonce completion:completion];
   }],
   [AXAlertButton buttonWithTitle:@"拒绝" style:AXAlertButtonStyleDestructive handler:^(AXGlassAlert *action){
    if(settled)return;settled=YES;
+   [self setAutoApproveEnabled:action.toggleOn];
    [self request:@"/api/v1/jobs/confirm" body:@{@"id":identifier,@"nonce":nonce,@"accepted":@NO} completion:^(NSDictionary *result,NSError *error){if(error)completion(nil,error);else [self waitJob:identifier completion:completion];}];
   }]
  ]);

@@ -23,8 +23,7 @@
 }
 - (void)configure {
  if(self.capsule)return;
- self.hidden=YES;self.backgroundColor=UIColor.clearColor;self.windowLevel=UIWindowLevelAlert+2;
- self.rootViewController=[DXStatusRootController new];self.rootViewController.view.backgroundColor=UIColor.clearColor;
+ self.hidden=YES;self.backgroundColor=UIColor.clearColor;self.windowLevel=UIWindowLevelAlert+2; self.rootViewController=[DXStatusRootController new];self.rootViewController.view.backgroundColor=UIColor.clearColor;
  self.capsule=[UIButton buttonWithType:UIButtonTypeCustom];self.capsule.frame=CGRectMake(0,0,184,60);
  self.capsule.backgroundColor=UIColor.secondarySystemBackgroundColor;self.capsule.layer.cornerRadius=22;
  self.capsule.layer.borderWidth=.5;self.capsule.layer.borderColor=UIColor.separatorColor.CGColor;
@@ -39,6 +38,22 @@
  self.spinner=[[UIActivityIndicatorView alloc]initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];self.spinner.frame=CGRectMake(5,29,19,19);self.spinner.transform=CGAffineTransformMakeScale(.6,.6);
  for(UIView *v in @[self.dot,self.heading,self.detail,self.spinner]){v.userInteractionEnabled=NO;[self.capsule addSubview:v];}
  [self.rootViewController.view addSubview:self.capsule];
+}
++ (UIWindowScene *)activeScene {
+ UIWindowScene *fallback=nil;
+ for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
+  if(![scene isKindOfClass:UIWindowScene.class])continue;
+  UIWindowScene *candidate=(UIWindowScene *)scene;
+  if(candidate.activationState==UISceneActivationStateForegroundActive)return candidate;
+  if(!fallback&&candidate.activationState==UISceneActivationStateForegroundInactive)fallback=candidate;
+ }
+ return fallback;
+}
+- (void)attachToBestScene {
+ UIWindowScene *current=self.windowScene;
+ if(current&&current.activationState!=UISceneActivationStateBackground)return;
+ UIWindowScene *scene=[FLEXDylixStatusWindow activeScene];
+ if(scene&&scene!=current)self.windowScene=scene;
 }
 - (BOOL)canBecomeKeyWindow {return NO;}
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
