@@ -21,14 +21,23 @@ jobs:
           brew install ldid xz
           xcodebuild -version
 
+      # 不再调用 update-theos：它会 init 全部子模块，其中 theos/orion 已不再公开，
+      # clone 时会退化成询问 Username 并直接失败（构建挂在 Install Theos，与代码无关）。
+      # 构建只需要 dm.pl、头文件、lib 和 logos。
       - name: Install Theos
         run: |
+          set -uo pipefail
           git clone --depth 1 https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
           git clone --depth 1 https://github.com/theos/dm.pl.git "$RUNNER_TEMP/theos/vendor/dm.pl"
           chmod +x "$RUNNER_TEMP/theos/vendor/dm.pl/dm.pl"
-          THEOS="$RUNNER_TEMP/theos" "$RUNNER_TEMP/theos/bin/update-theos"
+          for module in include lib logos; do
+            rm -rf "$RUNNER_TEMP/theos/vendor/$module"
+            git clone --depth 1 "https://github.com/theos/$module.git" "$RUNNER_TEMP/theos/vendor/$module" \
+              || echo "warning: vendor/$module 不可用，继续构建"
+          done
           mkdir -p "$RUNNER_TEMP/theos/sdks"
           ln -sfn "$(xcrun --sdk iphoneos --show-sdk-path)" "$RUNNER_TEMP/theos/sdks/iPhoneOS.sdk"
+          test -x "$RUNNER_TEMP/theos/vendor/dm.pl/dm.pl"
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/theos/vendor/dm.pl" >> "$GITHUB_PATH"
 
