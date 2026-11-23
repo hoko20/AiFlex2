@@ -390,7 +390,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 
 - (AXGlassCard *)buildContextCard {
     __weak typeof(self) weakSelf = self;
-    AXRowView *object = [self rowTitle:@"当前对象" subtitle:nil symbol:@"scope" tint:UIColor.systemBlueColor];
+    AXRowView *object = [self rowTitle:@"当前对象" subtitle:@"回 FLEX 点选视图后自动同步" symbol:@"scope" tint:UIColor.systemBlueColor];
     object.userInteractionEnabled = NO;
     self.contextObjectRow = object;
 
@@ -509,6 +509,15 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 #pragma mark - Refresh
 
 - (void)refresh {
+    // 目标视图可能在面板之外换过（回 FLEX 里重新点选一个视图，再回来打开面板）。
+    // 面板是复用的，这里每次刷新都和运行时对齐，避免一直显示第一次打开时的那个对象。
+    FLEXAiFlexRuntime *runtime = [FLEXAiFlexRuntime sharedRuntime];
+    if ([runtime.selectedObject isKindOfClass:UIView.class]) {
+        self.selectedObject = runtime.selectedObject;
+        NSString *liveName = NSStringFromClass([runtime.selectedObject class]);
+        if (liveName.length) self.className = liveName;
+        if (runtime.contextReport.length) self.report = runtime.contextReport;
+    }
     BOOL enabled = [FLEXAiFlexMCPServer isEnabled];
     NSString *state = [FLEXAiFlexMCPServer status];
     UIColor *tint = [state hasPrefix:@"运行中"]
@@ -544,10 +553,11 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
         self.heroHint.text = @"服务随宿主 App 生命周期运行 · 地址、端口与令牌在下方「MCP 服务」中管理";
         self.heroHint.textColor = UIColor.tertiaryLabelColor;
     }
-    self.heroSubtitle.text = [NSString stringWithFormat:@"FLEX++ 运行时 · %@", self.className];
-
-    self.contextObjectRow.valueLabel.text = self.className;
-    self.contextObjectRow.valueLabel.hidden = self.className.length == 0;
+    // 没选视图时兜底对象是 key window，直接写 "UIWindow" 会让人以为选错了东西。
+    NSString *displayName = [self.className isEqualToString:@"UIWindow"] ? @"未选择视图（当前窗口）" : self.className;
+    self.heroSubtitle.text = [NSString stringWithFormat:@"FLEX++ 运行时 · %@", displayName];
+    self.contextObjectRow.valueLabel.text = displayName;
+    self.contextObjectRow.valueLabel.hidden = displayName.length == 0;
     NSString *summary = [self reportSummary];
     self.contextReportRow.subtitleLabel.text = summary.length ? summary : @"暂无";
     self.restartRow.titleLabel.text = enabled ? @"重启 MCP 服务" : @"开启 MCP 服务";

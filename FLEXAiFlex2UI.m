@@ -676,7 +676,8 @@ static NSMutableArray *AXVisibleAlerts(void) {
             label.text = message;
             label.font = [UIFont systemFontOfSize:13];
             label.textColor = UIColor.secondaryLabelColor;
-            label.textAlignment = NSTextAlignmentCenter;
+            // 一句话的提示居中好看；连接说明这种整段文字居中会让每行长短跳、读起来费劲。
+            label.textAlignment = message.length > 64 ? NSTextAlignmentLeft : NSTextAlignmentCenter;
             label.numberOfLines = 0;
             [content addObject:label];
         }
@@ -789,20 +790,6 @@ static NSMutableArray *AXVisibleAlerts(void) {
     return self;
 }
 
-- (UIStackView *)buttonRow:(NSArray<AXAlertButton *> *)buttons {
-    NSMutableArray<UIButton *> *views = [NSMutableArray new];
-    for (AXAlertButton *action in buttons) {
-        UIButton *button = [self buttonForAction:action];
-        if (button) [views addObject:button];
-        if (button) [button.heightAnchor constraintEqualToConstant:46].active = YES;
-    }
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:views];
-    row.axis = UILayoutConstraintAxisHorizontal;
-    row.spacing = 10;
-    row.distribution = UIStackViewDistributionFillEqually;
-    return row;
-}
-
 - (UIStackView *)columnForButtons:(NSArray<AXAlertButton *> *)buttons {
     NSMutableArray<UIView *> *rows = [NSMutableArray new];
     NSMutableArray<AXAlertButton *> *inlineActions = [NSMutableArray new];
@@ -812,7 +799,7 @@ static NSMutableArray *AXVisibleAlerts(void) {
             continue;
         }
         if (inlineActions.count) {
-            [rows addObject:[self buttonRow:inlineActions]];
+            [rows addObjectsFromArray:[self chipRows:inlineActions]];
             [inlineActions removeAllObjects];
         }
         UIButton *button = [self buttonForAction:action];
@@ -820,13 +807,98 @@ static NSMutableArray *AXVisibleAlerts(void) {
         [button.heightAnchor constraintEqualToConstant:48].active = YES;
         [rows addObject:button];
     }
-    if (inlineActions.count) [rows addObject:[self buttonRow:inlineActions]];
+    if (inlineActions.count) [rows addObjectsFromArray:[self chipRows:inlineActions]];
 
     UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:rows];
     column.axis = UILayoutConstraintAxisVertical;
     column.spacing = 9;
     column.alignment = UIStackViewAlignmentFill;
     return column;
+}
+
+// 卡片内容宽度：卡片最宽 340，左右各留 20 的内边距，屏幕更窄时按屏幕宽度收缩。
+static CGFloat AXAlertContentWidth(void) {
+    CGFloat card = MIN(340.0, CGRectGetWidth(UIScreen.mainScreen.bounds) - 52.0);
+    return MAX(180.0, card - 40.0);
+}
+
+// inline 按钮原来是等分一行，像「上次连接诊断 / 使用已保存连接 / MCP 服务设置」
+// 这种长标题在窄屏上会被截成「使用...存连接」。改成按文字宽度整体排布的胶囊，
+// 一行放不下就换行——标题永远完整，卡片也不会横向溢出。
+- (NSArray<UIView *> *)chipRows:(NSArray<AXAlertButton *> *)buttons {
+    CGFloat limit = AXAlertContentWidth();
+    UIFont *font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    NSMutableArray<UIView *> *rows = [NSMutableArray new];
+    NSMutableArray<UIButton *> *current = [NSMutableArray new];
+    NSMutableArray<NSNumber *> *widths = [NSMutableArray new];
+    CGFloat used = 0;
+    for (AXAlertButton *action in buttons) {
+        if (!action.title.length) continue;
+        CGFloat width = ceil([action.title sizeWithAttributes:@{NSFontAttributeName: font}].width) + 30;
+        width = MIN(width, limit);
+        CGFloat needed = current.count ? used + 10 + width : width;
+        if (current.count && needed > limit) {
+            [rows addObject:[self chipRow:current widths:widths limit:limit]];
+            [current removeAllObjects];
+            [widths removeAllObjects];
+            needed = width;
+        }
+        UIButton *chip = [self chipForAction:action];
+        if (!chip) continue;
+        [current addObject:chip];
+        [widths addObject:@(width)];
+        used = needed;
+    }
+    if (current.count) [rows addObject:[self chipRow:current widths:widths limit:limit]];
+    return rows;
+}
+
+- (UIStackView *)chipRow:(NSArray<UIButton *> *)chips
+                  widths:(NSArray<NSNumber *> *)widths
+                   limit:(CGFloat)limit {
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:chips];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.spacing = 10;
+    row.alignment = UIStackViewAlignmentCenter;
+    [chips enumerateObjectsUsingBlock:^(UIButton *chip, NSUInteger index, BOOL *stop) {
+        CGFloat width = index < widths.count ? widths[index].doubleValue : limit;
+        NSLayoutConstraint *exact = [chip.widthAnchor constraintEqualToConstant:width];
+        exact.priority = 998;
+        NSLayoutConstraint *floor = [chip.widthAnchor constraintGreaterThanOrEqualToConstant:44];
+        floor.priority = 999;
+        [NSLayoutConstraint activateConstraints:@[exact, floor]];
+        [chip.heightAnchor constraintEqualToConstant:36].active = YES;
+    }];
+    // 尾部放一个会自动撑开的占位视图：胶囊按文字宽度靠左排列，多余空间不会把按钮拉宽。
+    UIView *spacer = [UIView new];
+    [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow - 1
+                              forAxis:UILayoutConstraintAxisHorizontal];
+    [spacer.widthAnchor constraintGreaterThanOrEqualToConstant:0].active = YES;
+    [row addArrangedSubview:spacer];
+    return row;
+}
+
+- (UIButton *)chipForAction:(AXAlertButton *)action {
+    UIButton *chip = [UIButton buttonWithType:UIButtonTypeCustom];
+    chip.translatesAutoresizingMaskIntoConstraints = NO;
+    chip.tag = [_buttons indexOfObjectIdenticalTo:action];
+    chip.layer.cornerRadius = 18;
+    chip.layer.cornerCurve = kCACornerCurveContinuous;
+    chip.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.07];
+    chip.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    chip.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    chip.titleLabel.adjustsFontSizeToFitWidth = YES;
+    chip.titleLabel.minimumScaleFactor = 0.85;
+    chip.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
+    [chip setTitle:action.title forState:UIControlStateNormal];
+    [chip setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
+    [chip addTarget:self action:@selector(actionTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [chip addTarget:self action:@selector(buttonPressed:)
+   forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
+    [chip addTarget:self action:@selector(buttonReleased:)
+   forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+                    UIControlEventTouchCancel | UIControlEventTouchDragExit];
+    return chip;
 }
 
 - (UIButton *)buttonForAction:(AXAlertButton *)action {

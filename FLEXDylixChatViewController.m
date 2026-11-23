@@ -67,6 +67,9 @@ static NSString *DXChatContent(id content) {
 @property NSUInteger port;
 @property NSString *authorizationCode;
 @property BOOL needsConnectionValidation, validatingConnection, restoringWorkspace, storageWarningShown;
+// 打开这条会话时 FLEX 面板是不是已经在屏上。决定左上角「返回」退到哪里：
+// 从面板进来的回面板，从悬浮球/通知进来的回到 App 并保留悬浮球。
+@property BOOL explorerWasHidden;
 // 上一次自动校验连接失败的时刻。只做 MCP 的用户不会去连 App 侧通道，
 // 但每次点进这个页面都会重新校验一次、干等一个超时，这里用来抑制重复空等。
 @property NSTimeInterval lastValidateFailure;
@@ -78,6 +81,10 @@ static NSString *DXChatContent(id content) {
 - (void)noteEmptyReply;
 - (void)nextPollIn:(NSTimeInterval)interval;
 - (void)buildNavigationItems;
+- (void)syncFlexSelection;
+- (void)updateContextLabel;
+- (void)hideStatusBall;
+- (BOOL)chatOnScreen;
 - (UIView *)buildHeader;
 - (void)buildMessageList;
 - (UIView *)buildComposer;
@@ -146,7 +153,10 @@ static NSString *DXChatContent(id content) {
  [self refreshAgentStatus];
 }
 - (instancetype)initWithReport:(NSString *)report className:(NSString *)className {
- if ((self=[super init])) { DXCurrentChat=self; _report=[report copy]?:@""; _className=[className copy]?:@"未知对象"; [FLEXAiFlexRuntime sharedRuntime].contextReport=_report;[FLEXAiFlexRuntime sharedRuntime].contextClassName=_className; _messages=[NSMutableArray new]; _drafts=[NSMutableDictionary new];_activeToolOperations=[NSMutableDictionary new]; _autoApprove=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.AutoApprove.v1"]; _keepAwake=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.KeepAwake.v1"]; [self restoreConnection];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationWillResignActiveNotification object:nil]; }
+ if ((self=[super init])) { // 新实例接管这个进程里的 AI 会话：旧实例的悬浮球必须马上撤掉，
+  // 否则它会带着自己的 window 浮在新页面上（就是「进了会话还看得见球」）。
+  FLEXDylixChatViewController *previous=DXCurrentChat;if(previous&&previous!=self)[previous hideStatusBall];
+  DXCurrentChat=self; _report=[report copy]?:@""; _className=[className copy]?:@"未知对象"; _explorerWasHidden=FLEXManager.sharedManager.isHidden; [FLEXAiFlexRuntime sharedRuntime].contextReport=_report;[FLEXAiFlexRuntime sharedRuntime].contextClassName=_className; _messages=[NSMutableArray new]; _drafts=[NSMutableDictionary new];_activeToolOperations=[NSMutableDictionary new]; _autoApprove=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.AutoApprove.v1"]; _keepAwake=[NSUserDefaults.standardUserDefaults boolForKey:@"FLEX.AiFlex2.KeepAwake.v1"]; [self restoreConnection];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationStateChanged:) name:UIApplicationWillResignActiveNotification object:nil]; }
  return self;
 }
 - (void)restoreConnection {
@@ -218,7 +228,35 @@ static NSString *DXChatContent(id content) {
  [FLEXAiFlexRuntime sharedRuntime].selectedObject=object;
  [FLEXAiFlexRuntime sharedRuntime].contextReport=self.report;
  [FLEXAiFlexRuntime sharedRuntime].contextClassName=self.className;
- self.contextLabel.text=[@"FLEX 现场  ·  " stringByAppendingString:self.className];
+ [self updateContextLabel];
+}
+
+// 会话页是复用的：先开会话、再回 FLEX 里点选别的视图，页头如果一直停在
+// 打开时的那个对象（常见就是兜底出来的 UIWindow），看起来就像「不显示当前选择的视图」。
+// 这里每次进页面和每轮轮询都跟共享运行时对齐一次，选中对象变了就同步类名与现场报告。
+- (void)syncFlexSelection {
+ FLEXAiFlexRuntime *runtime=[FLEXAiFlexRuntime sharedRuntime];
+ id selected=runtime.selectedObject;
+ if(![selected isKindOfClass:UIView.class])return;
+ NSString *name=NSStringFromClass([selected class]);if(!name.length)return;
+ BOOL changed=![self.className isEqual:name];
+ if(!changed&&self.selectedObject==selected)return;
+ self.selectedObject=selected;self.className=name;
+ // 报告首行写的是 Current FLEX selection；换目标时把它换掉，其余现场描述沿用运行时最新的一份。
+ if(runtime.contextReport.length)self.report=runtime.contextReport;
+ else if(!self.report.length||[self.report rangeOfString:@"Current FLEX selection:"].location!=NSNotFound)
+  self.report=[NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex2 project. A temporary FLEX view change is not a plugin implementation.",NSBundle.mainBundle.bundleIdentifier?:@"unknown",name];
+ [self updateContextLabel];
+}
+- (void)updateContextLabel {
+ NSString *name=self.className.length?self.className:@"未选择视图";
+ if([name isEqual:@"UIWindow"])name=@"未选择视图 · 当前窗口";
+ self.contextLabel.text=[@"FLEX 现场  ·  " stringByAppendingString:name];
+}
+- (void)contextTapped {
+ [self syncFlexSelection];
+ NSString *name=self.className.length?self.className:@"";
+ [self setStatus:name.length?[@"已同步当前现场 · " stringByAppendingString:name]:@"FLEX 里还没有选中视图"];
 }
 - (UIButton *)button:(NSString *)title action:(SEL)action {
  UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem]; [button setTitle:title forState:UIControlStateNormal];
@@ -281,11 +319,27 @@ static NSString *DXChatContent(id content) {
  UIBarButtonItem *disconnect=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"wifi.slash"] style:UIBarButtonItemStylePlain target:self action:@selector(disconnectTapped)];
  disconnect.accessibilityLabel=@"断开连接";
  self.navigationItem.rightBarButtonItems=@[disconnect,newSession];
- if(self.navigationController.viewControllers.firstObject==self){
-  UIBarButtonItem *close=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"minus"] style:UIBarButtonItemStylePlain target:self action:@selector(closeTapped)];
-  close.accessibilityLabel=@"收起会话，AI 继续运行";
-  self.navigationItem.leftBarButtonItem=close;
- }
+ // 会话页有两条到达路径：从 AiFlex2 面板 push（系统会给返回箭头），
+ // 以及从悬浮球/通知以整页弹层恢复（自己就是栈根，系统不给任何返回按钮）。
+ // 后者以前顶部只有标题，用户没有退路；这里自己补一个 "<"。
+ UINavigationController *nav=self.navigationController?:self.chatNavigation;
+ if(nav&&nav.viewControllers.firstObject!=self){self.navigationItem.leftBarButtonItem=nil;return;}
+ UIBarButtonItem *back=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"chevron.left"] style:UIBarButtonItemStylePlain target:nil action:nil];
+ back.accessibilityLabel=self.explorerWasHidden?@"返回到 App，会话收为悬浮球":@"返回 FLEX 面板";
+ // 轻点是「返回」；长按展开两个明确动作——收起成悬浮球的能力不丢，但不再占一个图标位。
+ __weak typeof(self) weakSelf=self;
+ back.primaryAction=[UIAction actionWithTitle:@"返回" image:nil identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat)[chat backTapped];}];
+ UIAction *toPanel=[UIAction actionWithTitle:@"返回 FLEX 面板" image:[UIImage systemImageNamed:@"square.grid.2x2"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat&&!chat.uiTransitioning)[chat minimizeChat:NO completion:^{}];}];
+ UIAction *toBall=[UIAction actionWithTitle:@"收起为悬浮球" image:[UIImage systemImageNamed:@"minus.circle"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat&&!chat.uiTransitioning)[chat minimizeChat:YES completion:^{}];}];
+ back.menu=[[UIMenu alloc]initWithTitle:@"" children:@[toPanel,toBall]];
+ self.navigationItem.leftBarButtonItem=back;
+}
+
+// 「返回」按进入方式退：面板进来的回面板，悬浮球进来的回 App（会话继续以球的形式待命）。
+- (void)backTapped {
+ if(self.uiTransitioning)return;
+ self.uiTransitioning=YES;
+ [self minimizeChat:self.explorerWasHidden completion:^{self.uiTransitioning=NO;}];
 }
 
 // 三行信息（状态与入口 / 项目·模型·会话 / 现场与活动）外面套玻璃卡，
@@ -341,8 +395,14 @@ static NSString *DXChatContent(id content) {
  self.contextLabel=[UILabel new];
  self.contextLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
  self.contextLabel.textColor=UIColor.secondaryLabelColor;
- self.contextLabel.text=[@"FLEX 现场  ·  " stringByAppendingString:self.className];
  self.contextLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
+ // 现场是会变的：在 FLEX 里重新点选一个视图后再回到会话，这一行要跟着换。
+ // 可点：点一下立刻重新对齐一次运行时，并把当前选中对象写回状态行。
+ self.contextLabel.userInteractionEnabled=YES;
+ self.contextLabel.accessibilityTraits=UIAccessibilityTraitButton;
+ self.contextLabel.accessibilityHint=@"轻点同步当前 FLEX 选中对象";
+ [self.contextLabel addGestureRecognizer:[[UITapGestureRecognizer alloc]initWithTarget:self action:@selector(contextTapped)]];
+ [self updateContextLabel];
 
  self.activityLabel=[UILabel new];
  self.activityLabel.font=[UIFont systemFontOfSize:12];
@@ -590,17 +650,31 @@ static NSString *DXChatContent(id content) {
 - (BOOL)isScreenControl:(NSString *)operation {
  return [@[@"gesture",@"activate_control",@"scroll_view",@"set_view",@"undo",@"input_text",@"set_control_value",@"open_tool",@"navigate_back",@"dismiss_tool",@"select_row",@"flex_scroll",@"set_search"] containsObject:operation];
 }
+// 悬浮球是独立 UIWindow（windowLevel 高于宿主窗口），一旦没藏住就会盖在会话页上面，
+// 而且它的显示判定依赖 view.window，转场那几帧很容易误判。会话页自己有明确的生命周期，
+// 进页面时直接强制收起一次最稳。
+- (void)hideStatusBall {
+ self.statusShowStamp=0;
+ if(self.statusWindow&&!self.statusWindow.hidden)self.statusWindow.hidden=YES;
+}
+// 会话页真正在屏上的判定：视图必须挂在一个可见窗口上。
+// 之前只看 view.window 非空，而窗口还在、只是被系统藏起来时会误判成「在屏上」。
+- (BOOL)chatOnScreen {
+ UIView *view=self.viewIfLoaded;UIWindow *window=view.window;
+ return view!=nil&&window!=nil&&!window.hidden&&!view.hidden&&view.alpha>.01&&!self.isBeingDismissed;
+}
 - (void)refreshAgentStatus {
  // 任务开始/结束、页面进出都会走到这里，顺带按“是否需要常亮”更新系统定时器。
  [self updateIdleTimer];
- // 只要会话不在屏幕上（收起、被 FLEX 其它页面顶掉、或整个 FLEX 面板关掉），
- // 已连接就应该有这个悬浮球；之前只认 chatMinimized，从别处关掉面板就再也看不到它。
- BOOL chatVisible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!FLEXManager.sharedManager.explorerWindow.isHidden&&!self.navigationController.isBeingDismissed;
+ // 同一进程里可能有不止一个会话实例（面板里点开一次、悬浮球又恢复一次）。
+ // 只有最新的那个实例拥有悬浮球；旧实例一旦还留着球，就会浮在新会话页上面。
+ BOOL superseded=DXCurrentChat!=nil&&DXCurrentChat!=self;
  UINavigationController *nav=self.navigationController?:self.chatNavigation;
+ BOOL chatVisible=[self chatOnScreen];
  // 转场途中（push/present/dismiss 正在跑）既没有稳定窗口也没稳定状态，
  // 这时把悬浮球显出来就会在进入会话的一瞬间闪一下，必须排除掉。
  BOOL transitioning=self.uiTransitioning||self.isBeingPresented||self.isBeingDismissed||nav.isBeingPresented||nav.isBeingDismissed||nav.transitionCoordinator!=nil;
- BOOL wanted=self.csrf.length&&!chatVisible&&!transitioning&&!self.statusSuspended&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+ BOOL wanted=!superseded&&!chatVisible&&self.csrf.length&&!transitioning&&!self.statusSuspended&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
  if(!wanted)self.statusShowStamp=0;
  BOOL show=wanted;
  if(show&&!(self.statusWindow&&!self.statusWindow.hidden)){
@@ -672,7 +746,7 @@ static NSString *DXChatContent(id content) {
  [self updateCaptureStatus:job[@"flexCaptureStatus"]];[self refreshAgentStatus];
 }
 - (NSDictionary *)chatWindowStatus {
- BOOL visible=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!self.navigationController.isBeingDismissed;
+ BOOL visible=[self chatOnScreen]&&!self.navigationController.isBeingDismissed;
  return @{@"chatVisible":@(visible),@"minimized":@(self.chatMinimized),@"connected":@(self.connectionState==2&&!self.needsConnectionValidation&&self.missedHeartbeats<2),@"taskRunning":@(self.busy),@"stopped":@(self.agentStopped),@"sessionID":self.sessionID?:@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(!visible&&FLEXManager.sharedManager.isHidden&&!self.uiTransitioning),@"statusVisible":@(self.statusWindow&&!self.statusWindow.hidden),@"autoApprove":@(self.autoApprove),@"keepAwake":@(self.keepAwake),@"activity":self.taskPhase?:@"",@"uiTransitioning":@(self.uiTransitioning)};
 }
 - (void)minimizeChat:(BOOL)target completion:(dispatch_block_t)completion {
@@ -682,8 +756,11 @@ static NSString *DXChatContent(id content) {
  if(nav.presentingViewController)[nav dismissViewControllerAnimated:YES completion:done];else done();
 }
 - (void)restoreChatWithCompletion:(dispatch_block_t)completion {
- self.statusWindow.hidden=YES;
+ [self hideStatusBall];
  if(self.viewIfLoaded.window){[FLEXManager.sharedManager showExplorer];self.chatMinimized=NO;[self refreshAgentStatus];if(completion)completion();return;}
+ // 记录这次是从哪儿来的：此时 FLEX 面板还是收起状态，说明用户是点悬浮球/通知回来的，
+ // 「返回」就应该退回 App 而不是弹出一个他从没打开过的面板。
+ self.explorerWasHidden=FLEXManager.sharedManager.isHidden;
  // 会话页可能已经不在任何导航栈里（用户在面板里返回过、或面板被系统整体回收），
  // 这时 self.navigationController 是 nil。以前把这个 nil 直接交给 present，
  // 就会抛 "Application tried to present a nil modal view controller" 把宿主杀掉。
@@ -696,7 +773,9 @@ static NSString *DXChatContent(id content) {
  self.chatNavigation=nav;
  [FLEXManager.sharedManager dismissAnyPresentedTools:^{
   // 非动画：面板窗口刚被重新显示，再叠一段滑入动画会先露出下面的页面，看起来就是闪一下。
-  [FLEXManager.sharedManager presentTool:^UINavigationController *{return nav;} animated:NO completion:^{self.chatMinimized=NO;[self refreshAgentStatus];if(completion)completion();}];
+  [FLEXManager.sharedManager presentTool:^UINavigationController *{return nav;} animated:NO completion:^{self.chatMinimized=NO;[self hideStatusBall];
+   // 恢复出来的导航栈里 self 就是栈根，系统不会给返回箭头，这里补上自己的 "<"。
+   [self buildNavigationItems];[self syncFlexSelection];[self refreshAgentStatus];if(completion)completion();}];
  }];
 }
 - (void)stopAgentTapped {
@@ -727,15 +806,21 @@ static NSString *DXChatContent(id content) {
 }
 - (void)viewWillAppear:(BOOL)animated {
  [super viewWillAppear:animated];
- // 会话页已经在屏上，悬浮球立刻收起，不等下一轮轮询（否则进页面的瞬间会闪一下）。
+ // 在屏上的这一份接管会话（面板里可能先后 push 过好几个会话页）：
+ // 归属跟着可见性走，被顶到下层的那份就不会再往屏幕上放球。
+ DXCurrentChat=self;
  UINavigationController *nav=self.navigationController;
  if(nav)self.chatNavigation=nav;
  self.statusShowStamp=0;
- self.statusWindow.hidden=YES;
+ [self hideStatusBall];
+ // 页面可能是被重新展示的（悬浮球恢复 / 从别的工具页回来），导航项按当前栈重新算一遍，
+ // 否则栈根这种情形会停在「没有返回按钮」的旧状态。
+ [self buildNavigationItems];
+ [self syncFlexSelection];
  [self refreshAgentStatus];
 }
 - (void)viewDidAppear:(BOOL)animated {
- [super viewDidAppear:animated];self.chatMinimized=NO;[self refreshAgentStatus];
+ [super viewDidAppear:animated];self.chatMinimized=NO;[self hideStatusBall];[self syncFlexSelection];[self refreshAgentStatus];
  if(self.needsConnectionValidation){
   // 校验失败后 30 秒内不再自动重试。原先每次进页面都会打一次 /api/v1/status，
   // 没开 App 侧服务时一直卡在“正在检查连接…”，只用 MCP 的场景纯属空等。
@@ -746,6 +831,12 @@ static NSString *DXChatContent(id content) {
  [self startAgentPolling];[self pollAgent];
 }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self rememberConnectionNow]; }
+- (void)viewDidLayoutSubviews {
+ [super viewDidLayoutSubviews];
+ // 会话页在屏上时，任何一次布局都顺手确认球是收起的：
+ // 它挂在独立 window 上、windowLevel 比宿主高，漏一次就会整块盖在页面上。
+ if(self.viewIfLoaded.window&&self.statusWindow&&!self.statusWindow.hidden)[self hideStatusBall];
+}
 // 被返回上一级（pop）时结束轮询：定时器强持有 self，不 invalidate 会让控制器永远不释放，
 // MCP 的 chat_status/minimize_chat 也会一直落到这个已经看不见的页面上。
 // 收起（dismiss）不算 pop，导航栈里仍然包含 self，轮询要继续跑。
@@ -774,6 +865,8 @@ static NSString *DXChatContent(id content) {
  if(timer)timer.fireDate=[NSDate dateWithTimeIntervalSinceNow:MAX(0.15,interval)];
 }
 - (void)pollAgent {
+ // 每轮都对齐一次现场：轮询本来就在跑，顺手把选中对象的变化同步到页头，零额外开销。
+ [self syncFlexSelection];
  [self refreshAgentStatus];
  if(self.agentPolling||!self.csrf.length||self.needsConnectionValidation)return;
  self.agentPolling=YES;NSUInteger generation=self.sessionLoadGeneration;
@@ -991,8 +1084,7 @@ static NSString *DXChatContent(id content) {
  // 有活在跑就必须亮着：收起会话后 AI 还在继续，锁屏会被系统挂起。
  if(self.busy||self.jobID.length||self.localOperation.length||self.activeToolOperations.count)return YES;
  // 没有任务时就只在会话页真的在屏上时保持常亮；收起后立刻交还系统自动锁屏。
- BOOL chatOnScreen=self.viewIfLoaded.window!=nil&&!self.viewIfLoaded.window.hidden&&!FLEXManager.sharedManager.explorerWindow.isHidden;
- return chatOnScreen;
+ return [self chatOnScreen];
 }
 - (void)updateIdleTimer {
  UIApplication.sharedApplication.idleTimerDisabled=[self keepAwakeWanted];
