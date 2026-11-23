@@ -332,8 +332,9 @@ static NSString *DXChatContent(id content) {
  UIBarButtonItem *back=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"chevron.left"] style:UIBarButtonItemStylePlain target:nil action:nil];
  back.accessibilityLabel=self.explorerWasHidden?@"返回到 App，会话收为悬浮球":@"返回 FLEX 面板";
  // 轻点是「返回」；长按展开两个明确动作——收起成悬浮球的能力不丢，但不再占一个图标位。
+ // primaryAction 决定外观：图标+文案都给上，无论系统取哪一个都还是那个「返回」的样子。
  __weak typeof(self) weakSelf=self;
- back.primaryAction=[UIAction actionWithTitle:@"返回" image:nil identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat)[chat backTapped];}];
+ back.primaryAction=[UIAction actionWithTitle:@"返回" image:[UIImage systemImageNamed:@"chevron.left"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat)[chat backTapped];}];
  UIAction *toPanel=[UIAction actionWithTitle:@"返回 FLEX 面板" image:[UIImage systemImageNamed:@"square.grid.2x2"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat&&!chat.uiTransitioning)[chat minimizeChat:NO completion:^{}];}];
  UIAction *toBall=[UIAction actionWithTitle:@"收起为悬浮球" image:[UIImage systemImageNamed:@"minus.circle"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat&&!chat.uiTransitioning)[chat minimizeChat:YES completion:^{}];}];
  back.menu=[UIMenu menuWithTitle:@"" children:@[toPanel,toBall]];
