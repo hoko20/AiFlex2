@@ -480,10 +480,10 @@ static BOOL PrivateIPv4(uint32_t host){
  return NO;
 }
 - (void)markBusy:(nw_connection_t)connection busy:(BOOL)busy{
- NSValue *key=[NSValue valueWithPointer:connection];
+ NSValue *key=[NSValue valueWithPointer:(__bridge const void *)connection];
  if(busy)[self.busy addObject:key];else[self.busy removeObject:key];
 }
-- (BOOL)isBusy:(nw_connection_t)connection{return [self.busy containsObject:[NSValue valueWithPointer:connection]];}
+- (BOOL)isBusy:(nw_connection_t)connection{return [self.busy containsObject:[NSValue valueWithPointer:(__bridge const void *)connection]];}
 // 空闲连接 180 秒后收线，防止死连接占满 8 个槽位；但只要这一条连接上还有请求在跑
 // （wait_for、sandbox_grep、导出、截图都可能超过 60 秒），就只续航而不收线——
 // 收线会丢掉已经算完的结果，客户端只能看到连接中断。
