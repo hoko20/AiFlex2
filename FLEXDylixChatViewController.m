@@ -255,8 +255,13 @@ static NSString *DXChatContent(id content) {
 }
 - (void)contextTapped {
  [self syncFlexSelection];
- NSString *name=self.className.length?self.className:@"";
- [self setStatus:name.length?[@"已同步当前现场 · " stringByAppendingString:name]:@"FLEX 里还没有选中视图"];
+ if(self.className.length&&![self.className isEqual:@"UIWindow"]){
+  [self setStatus:[@"已同步当前现场 · " stringByAppendingString:self.className]];return;
+ }
+ // 没选中视图时只说「UIWindow」等于什么也没说，直接把怎么选讲清楚。
+ AXPresentAlert(self,@"FLEX 现场",@"现在还没有选中视图，AI 只能看到「当前窗口」。\n\n回到 FLEX，点工具条上的「选择」，再点一下目标视图（例如那条广告），这里就会自动同步成它的类名，发给 AI 的现场报告也会一起更新。",AXAlertMessageStyleText,nil,@[
+  [AXAlertButton buttonWithTitle:@"知道了" style:AXAlertButtonStylePrimary handler:nil]
+ ]);
 }
 - (UIButton *)button:(NSString *)title action:(SEL)action {
  UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem]; [button setTitle:title forState:UIControlStateNormal];
@@ -331,7 +336,7 @@ static NSString *DXChatContent(id content) {
  back.primaryAction=[UIAction actionWithTitle:@"返回" image:nil identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat)[chat backTapped];}];
  UIAction *toPanel=[UIAction actionWithTitle:@"返回 FLEX 面板" image:[UIImage systemImageNamed:@"square.grid.2x2"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat&&!chat.uiTransitioning)[chat minimizeChat:NO completion:^{}];}];
  UIAction *toBall=[UIAction actionWithTitle:@"收起为悬浮球" image:[UIImage systemImageNamed:@"minus.circle"] identifier:nil handler:^(UIAction *action){typeof(self) chat=weakSelf;if(chat&&!chat.uiTransitioning)[chat minimizeChat:YES completion:^{}];}];
- back.menu=[[UIMenu alloc]initWithTitle:@"" children:@[toPanel,toBall]];
+ back.menu=[UIMenu menuWithTitle:@"" children:@[toPanel,toBall]];
  self.navigationItem.leftBarButtonItem=back;
 }
 
