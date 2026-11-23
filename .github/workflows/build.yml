@@ -22,22 +22,21 @@ jobs:
           xcodebuild -version
 
       # 不再调用 update-theos：它会 init 全部子模块，其中 theos/orion 已不再公开，
-      # clone 时会退化成询问 Username 并直接失败（构建挂在 Install Theos，与代码无关）。
-      # 构建只需要 dm.pl、头文件、lib 和 logos。
+      # clone 时会退化成询问 Username 并直接失败（构建挂在 Install Theos）。
+      # 按 .gitmodules 只拉构建必需的头文件/lib，dm.pl 与 logos 允许缺失。
+      # 注意 vendor/include 的真实仓库是 theos/headers，不能按目录名拼 URL。
       - name: Install Theos
         run: |
-          set -uo pipefail
+          set -eo pipefail
           git clone --depth 1 https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
-          git clone --depth 1 https://github.com/theos/dm.pl.git "$RUNNER_TEMP/theos/vendor/dm.pl"
-          chmod +x "$RUNNER_TEMP/theos/vendor/dm.pl/dm.pl"
-          for module in include lib logos; do
-            rm -rf "$RUNNER_TEMP/theos/vendor/$module"
-            git clone --depth 1 "https://github.com/theos/$module.git" "$RUNNER_TEMP/theos/vendor/$module" \
-              || echo "warning: vendor/$module 不可用，继续构建"
-          done
-          mkdir -p "$RUNNER_TEMP/theos/sdks"
-          ln -sfn "$(xcrun --sdk iphoneos --show-sdk-path)" "$RUNNER_TEMP/theos/sdks/iPhoneOS.sdk"
-          test -x "$RUNNER_TEMP/theos/vendor/dm.pl/dm.pl"
+          cd "$RUNNER_TEMP/theos"
+          git submodule update --init --depth 1 vendor/include vendor/lib
+          git submodule update --init --depth 1 vendor/dm.pl || echo "warning: vendor/dm.pl 不可用"
+          git submodule update --init --depth 1 vendor/logos || echo "warning: vendor/logos 不可用"
+          chmod +x vendor/dm.pl/dm.pl 2>/dev/null || true
+          mkdir -p sdks
+          ln -sfn "$(xcrun --sdk iphoneos --show-sdk-path)" sdks/iPhoneOS.sdk
+          test -d vendor/include && test -d vendor/lib
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/theos/vendor/dm.pl" >> "$GITHUB_PATH"
 
