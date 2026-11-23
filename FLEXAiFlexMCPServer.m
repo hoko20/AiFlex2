@@ -10,6 +10,7 @@
 #import <net/if.h>
 #import <arpa/inet.h>
 #import <errno.h>
+#import <math.h>
 #import <stdlib.h>
 #import <string.h>
 
@@ -107,11 +108,24 @@ static NSDictionary *ToolNamed(NSString *name){
  for(NSDictionary *tool in Tools())if([tool[@"name"] isEqual:name])return tool;
  return nil;
 }
+// JSON true/false 落到 NSNumber，但和 1/0 不是一回事：只按 NSNumber 判断会让
+// boolean 参数接受 1、让 integer 参数接受 true 或 1.5（被 integerValue 悄悄截断）。
+// NSJSONSerialization 给布尔值的是 __NSCFBoolean，这是唯一可靠的区分点；
+// 不要用 CFGetTypeID 去猜，对非 toll-free 对象属于未定义行为。
+static BOOL BooleanValue(id value){
+ if(![value isKindOfClass:NSNumber.class])return NO;
+ if([NSStringFromClass([value class]) isEqual:@"__NSCFBoolean"])return YES;
+ const char *type=[(NSNumber *)value objCType];
+ return type&&(type[0]=='c'||type[0]=='B')&&[NSStringFromClass([value class]) containsString:@"Boolean"];
+}
 static BOOL TypeMatches(NSString *type,id value){
  if([type isEqual:@"string"])return [value isKindOfClass:NSString.class];
- if([type isEqual:@"boolean"])return [value isKindOfClass:NSNumber.class];
  if([type isEqual:@"array"])return [value isKindOfClass:NSArray.class];
- return [value isKindOfClass:NSNumber.class];
+ if(![value isKindOfClass:NSNumber.class])return NO;
+ if(BooleanValue(value))return [type isEqual:@"boolean"];
+ if([type isEqual:@"boolean"])return NO;
+ if([type isEqual:@"integer"]){double number=[value doubleValue];return isfinite(number)&&number==floor(number);}
+ return YES;
 }
 static BOOL Same(NSString *left,NSString *right){
  const char *a=left.UTF8String,*b=right.UTF8String;
@@ -156,7 +170,11 @@ static NSString *LocalIPv4(void){
 @property(nonatomic) BOOL rebinding;              // 内部重建中：端口冲突先等待旧 socket 释放，别急着顺延
 @property(nonatomic) BOOL inBackground;           // 宿主是否在后台：后台会被系统挂起，监听随之中断
 @property(nonatomic) UIBackgroundTaskIdentifier lease; // 进后台时的短时租约，只为让在途请求收尾
+@property(nonatomic) NSMutableSet<NSValue *> *busy; // 有请求正在执行的连接：看门狗不能收线
 - (void)accept:(nw_connection_t)connection;
+- (void)armWatchdog:(nw_connection_t)connection;
+- (void)markBusy:(nw_connection_t)connection busy:(BOOL)busy;
+- (BOOL)isBusy:(nw_connection_t)connection;
 - (void)beginListening;
 - (void)restart;
 - (void)beginBackgroundLease;
@@ -180,7 +198,7 @@ static NSString *LocalIPv4(void){
  return server;
 }
 + (BOOL)isEnabled{return [NSUserDefaults.standardUserDefaults boolForKey:DXMCPServiceKey];}
-+ (void)setEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:DXMCPServiceKey];}
++ (void)setEnabled:(BOOL)enabled{[NSUserDefaults.standardUserDefaults setBool:enabled forKey:DXMCPServiceKey];Sync();}
 + (NSUInteger)port{
  NSUInteger port=[NSUserDefaults.standardUserDefaults integerForKey:DXMCPPortKey];
  return port>=1024&&port<=65535?port:8790;
@@ -208,7 +226,7 @@ static NSString *LocalIPv4(void){
  id stored=[NSUserDefaults.standardUserDefaults objectForKey:DXMCPAuthKey];
  return stored?[stored boolValue]:YES;
 }
-+ (void)setAuthRequired:(BOOL)required{[NSUserDefaults.standardUserDefaults setBool:required forKey:DXMCPAuthKey];}
++ (void)setAuthRequired:(BOOL)required{[NSUserDefaults.standardUserDefaults setBool:required forKey:DXMCPAuthKey];Sync();}
 + (NSString *)token{
  NSString *token=[NSUserDefaults.standardUserDefaults stringForKey:DXMCPTokenKey];
  if(!token.length){token=RandomToken();[NSUserDefaults.standardUserDefaults setObject:token forKey:DXMCPTokenKey];Sync();}
@@ -220,6 +238,8 @@ static NSString *LocalIPv4(void){
  NSCharacterSet *allowed=[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"];
  if([value rangeOfCharacterFromSet:allowed.invertedSet].location!=NSNotFound)return NO;
  [NSUserDefaults.standardUserDefaults setObject:value forKey:DXMCPTokenKey];
+ // 自填的授权码必须立刻落盘：面板复制后马上杀进程也不会丢，否则下次 401。
+ Sync();
  return YES;
 }
 + (NSString *)rotateToken{
@@ -256,7 +276,7 @@ static NSString *LocalIPv4(void){
 }
 + (NSString *)portNotice{return [self shared].portNotice;}
 - (instancetype)init{
- if((self=[super init])){_queue=dispatch_queue_create("flex.aiflex.mcp",DISPATCH_QUEUE_SERIAL);_connections=[NSMutableSet new];_lease=UIBackgroundTaskInvalid;}
+ if((self=[super init])){_queue=dispatch_queue_create("flex.aiflex.mcp",DISPATCH_QUEUE_SERIAL);_connections=[NSMutableSet new];_busy=[NSMutableSet new];_lease=UIBackgroundTaskInvalid;}
  return self;
 }
 - (void)start{
@@ -423,6 +443,20 @@ static NSString *LocalIPv4(void){
   [self endBackgroundLease];
  });
 }
+// 100.64/10 是运营商级 NAT 与 Tailscale 一类的常用段，出现在手机上很常见；
+// 只认 10/8、172.16/12、192.168/16 会把这类局域网直连判成"公网"而拒掉。
+static BOOL PrivateIPv4(uint32_t host){
+ if((host>>24)==127||(host>>24)==10)return YES;
+ if((host&0xFFF00000)==0xAC100000)return YES;
+ if((host&0xFFFF0000)==0xC0A80000)return YES;
+ if((host&0xFFFF0000)==0xA9FE0000)return YES;
+ if((host&0xFFC00000)==0x64400000)return YES;
+ return NO;
+}
+// Keep the endpoint private to this device or its LAN. IPv6 must be handled too:
+// a client that resolves "localhost" connects from ::1, and an IPv4-only check
+// used to cancel that socket before any byte was read — the client only saw a
+// silent close, which is indistinguishable from a crash.
 - (BOOL)privateConnection:(nw_connection_t)connection{
  nw_endpoint_t endpoint=nw_connection_copy_endpoint(connection);
  const struct sockaddr *address=nw_endpoint_get_address(endpoint);
@@ -431,13 +465,51 @@ static NSString *LocalIPv4(void){
   nw_endpoint_t remote=path?nw_path_copy_effective_remote_endpoint(path):nil;
   address=remote?nw_endpoint_get_address(remote):NULL;
  }
- if(!address||address->sa_family!=AF_INET)return NO;
- uint32_t host=ntohl(((const struct sockaddr_in *)address)->sin_addr.s_addr);
- if((host>>24)==127||(host>>24)==10||(host&0xFFF00000)==0xAC100000||(host>>16)==0xC0A8||(host>>16)==0xA9FE)return YES;
+ if(!address)return NO;
+ if(address->sa_family==AF_INET)return PrivateIPv4(ntohl(((const struct sockaddr_in *)address)->sin_addr.s_addr));
+ if(address->sa_family==AF_INET6){
+  const struct in6_addr *six=&((const struct sockaddr_in6 *)address)->sin6_addr;
+  if(IN6_IS_ADDR_LOOPBACK(six)||IN6_IS_ADDR_LINKLOCAL(six))return YES;
+  if((six->s6_addr[0]&0xFE)==0xFC)return YES; // fc00::/7 unique local
+  if(IN6_IS_ADDR_V4MAPPED(six)){
+   uint32_t host=((uint32_t)six->s6_addr[12]<<24)|((uint32_t)six->s6_addr[13]<<16)|((uint32_t)six->s6_addr[14]<<8)|(uint32_t)six->s6_addr[15];
+   return PrivateIPv4(host);
+  }
+  return NO;
+ }
  return NO;
 }
+- (void)markBusy:(nw_connection_t)connection busy:(BOOL)busy{
+ NSValue *key=[NSValue valueWithPointer:connection];
+ if(busy)[self.busy addObject:key];else[self.busy removeObject:key];
+}
+- (BOOL)isBusy:(nw_connection_t)connection{return [self.busy containsObject:[NSValue valueWithPointer:connection]];}
+// 空闲连接 180 秒后收线，防止死连接占满 8 个槽位；但只要这一条连接上还有请求在跑
+// （wait_for、sandbox_grep、导出、截图都可能超过 60 秒），就只续航而不收线——
+// 收线会丢掉已经算完的结果，客户端只能看到连接中断。
+- (void)armWatchdog:(nw_connection_t)connection{
+ __weak typeof(self) weak=self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(180*NSEC_PER_SEC)),self.queue,^{
+  FLEXAiFlexMCPServer *server=weak;if(!server)return;
+  if(![server.connections containsObject:connection])return;
+  if([server isBusy:connection]){[server armWatchdog:connection];return;}
+  [server close:connection];
+ });
+}
 - (void)accept:(nw_connection_t)connection{
- if(self.connections.count>=8||![self privateConnection:connection]){nw_connection_cancel(connection);return;}
+ if(![self privateConnection:connection]){
+  // 静默 cancel 时客户端只看到"对端关闭"，分不清是地址问题还是服务没起来。
+  // 这里先起来再回 403，把原因写进响应体。
+  nw_connection_set_queue(connection,self.queue);
+  __weak typeof(self) weak=self;
+  nw_connection_set_state_changed_handler(connection,^(nw_connection_state_t state,nw_error_t error){
+   if(state==nw_connection_state_failed||state==nw_connection_state_cancelled)[weak close:connection];
+  });
+  nw_connection_start(connection);
+  [self respond:connection status:403 headers:@{} body:[@"仅接受本机或局域网地址：请使用 AiFlex2 面板上的实际局域网地址，不要经过公网转发或反向代理。" dataUsingEncoding:NSUTF8StringEncoding]];
+  return;
+ }
+ if(self.connections.count>=8){nw_connection_cancel(connection);return;}
  [self.connections addObject:connection];
  __weak typeof(self) weak=self;
  nw_connection_set_queue(connection,self.queue);
@@ -445,14 +517,7 @@ static NSString *LocalIPv4(void){
   if(state==nw_connection_state_failed||state==nw_connection_state_cancelled)[weak close:connection];
  });
  nw_connection_start(connection);
- // Watchdog: a client that connects but never completes a request must not hold
- // one of the 8 slots forever. close: is idempotent and a normal request replies
- // and closes well within the 45s client timeout, so 60s only targets dead peers.
- __weak typeof(self) weakServer=self;
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(60*NSEC_PER_SEC)),self.queue,^{
-  FLEXAiFlexMCPServer *server=weakServer;if(!server)return;
-  if([server.connections containsObject:connection])[server close:connection];
- });
+ [self armWatchdog:connection];
  [self read:connection buffer:[NSMutableData data]];
 }
 - (void)read:(nw_connection_t)connection buffer:(NSMutableData *)buffer{
@@ -497,6 +562,10 @@ static NSString *LocalIPv4(void){
 }
 - (void)handle:(NSDictionary *)request connection:(nw_connection_t)connection{
  NSString *method=request[@"method"];NSString *path=request[@"path"];
+ // /mcp?trace=1 这类带查询串的地址是合法的：只按全等比较会直接 404，
+ // 客户端拿到的现象是"工具列表拉不到"，看不出是路径判定太严。
+ NSRange query=[path rangeOfString:@"?"];
+ if(query.location!=NSNotFound)path=[path substringToIndex:query.location];
  if(![path isEqual:@"/mcp"]){[self respond:connection status:404 headers:@{} body:[@"Not Found" dataUsingEncoding:NSUTF8StringEncoding]];return;}
  if([method isEqual:@"DELETE"]){[self respond:connection status:204 headers:@{} body:NSData.data];return;}
  if(![method isEqual:@"POST"]){[self respond:connection status:405 headers:@{} body:[@"Method Not Allowed" dataUsingEncoding:NSUTF8StringEncoding]];return;}
@@ -525,7 +594,11 @@ static NSString *LocalIPv4(void){
  if([method isEqual:@"tools/call"]){
   NSString *name=params[@"name"];id arguments=params[@"arguments"]?:@{};
   if(![name isKindOfClass:NSString.class]||![arguments isKindOfClass:NSDictionary.class]){[self sendResponse:HTTPJSON(200,RPCError(identifier,-32602,@"tools/call 缺少 name 或 arguments"),nil) connection:connection];return;}
-  [self call:name arguments:arguments completion:^(NSDictionary *result){[self sendResponse:HTTPJSON(200,RPC(identifier,result),nil) connection:connection];}];return;
+  [self markBusy:connection busy:YES];
+  [self call:name arguments:arguments completion:^(NSDictionary *result){
+   [self markBusy:connection busy:NO];
+   [self sendResponse:HTTPJSON(200,RPC(identifier,result),nil) connection:connection];
+  }];return;
  }
  [self sendResponse:HTTPJSON(200,RPCError(identifier,-32601,[@"未实现的方法：" stringByAppendingString:method]),nil) connection:connection];
 }
@@ -550,7 +623,7 @@ static NSString *LocalIPv4(void){
  if(!enabled){completion(ToolError(@"工具不存在或已在 FLEX 设置中关闭"));return;}
  if([name isEqual:@"aiflex_status"]){
   NSString *bundle=NSBundle.mainBundle.bundleIdentifier?:@"";
-  NSDictionary *status=@{@"bundleID":bundle,@"endpoint":[FLEXAiFlexMCPServer endpoint],@"state":[FLEXAiFlexMCPServer status],@"groups":@{@"read":@YES,@"sensitive":@([FLEXAiFlexMCPServer sensitiveEnabled]),@"control":@([FLEXAiFlexMCPServer controlEnabled]),@"script":@([FLEXAiFlexMCPServer scriptEnabled]),@"tracing":@([FLEXAiFlexMCPServer tracingEnabled])},@"server":@"AiFlex2 in-app",@"build":@"2026-11-19-full",@"selectedObject":([FLEXAiFlexRuntime sharedRuntime].selectedObject?NSStringFromClass([[FLEXAiFlexRuntime sharedRuntime].selectedObject class]):@"未选中")};
+  NSDictionary *status=@{@"bundleID":bundle,@"endpoint":[FLEXAiFlexMCPServer endpoint],@"state":[FLEXAiFlexMCPServer status],@"groups":@{@"read":@YES,@"sensitive":@([FLEXAiFlexMCPServer sensitiveEnabled]),@"control":@([FLEXAiFlexMCPServer controlEnabled]),@"script":@([FLEXAiFlexMCPServer scriptEnabled]),@"tracing":@([FLEXAiFlexMCPServer tracingEnabled])},@"server":@"AiFlex2 in-app",@"build":[NSString stringWithFormat:@"%@ (%@)",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"unknown",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]?:@"-"],@"selectedObject":([FLEXAiFlexRuntime sharedRuntime].selectedObject?NSStringFromClass([[FLEXAiFlexRuntime sharedRuntime].selectedObject class]):@"未选中")};
   completion(TextContent(status,NO));return;
  }
  NSDictionary *properties=tool[@"schema"][@"properties"];
@@ -648,8 +721,25 @@ static NSString *LocalIPv4(void){
   dispatch_async(self.queue,^{completion(error.length?ToolError(error):FlexContent(result));});
  });
 }
+// 状态行里的原因短语原来只有 200/202/204/401 是真值，其余全部写成 "Error"，
+// 抓包和日志里看不出是 403、404 还是 413。
+static NSString *ReasonPhrase(NSInteger status){
+ switch(status){
+  case 200:return @"OK";
+  case 202:return @"Accepted";
+  case 204:return @"No Content";
+  case 400:return @"Bad Request";
+  case 401:return @"Unauthorized";
+  case 403:return @"Forbidden";
+  case 404:return @"Not Found";
+  case 405:return @"Method Not Allowed";
+  case 413:return @"Content Too Large";
+  case 431:return @"Request Header Fields Too Large";
+  default:return status>=500?@"Server Error":@"Error";
+ }
+}
 - (void)respond:(nw_connection_t)connection status:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body{
- NSMutableString *head=[NSMutableString stringWithFormat:@"HTTP/1.1 %ld %@\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %lu\r\nConnection: close\r\n",(long)status,status==200?@"OK":status==202?@"Accepted":status==204?@"No Content":status==401?@"Unauthorized":@"Error",(unsigned long)body.length];
+ NSMutableString *head=[NSMutableString stringWithFormat:@"HTTP/1.1 %ld %@\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %lu\r\nConnection: close\r\n",(long)status,ReasonPhrase(status),(unsigned long)body.length];
  for(NSString *key in headers)[head appendFormat:@"%@: %@\r\n",key,headers[key]];
  [head appendString:@"\r\n"];
  NSMutableData *message=[head dataUsingEncoding:NSUTF8StringEncoding].mutableCopy;
@@ -662,6 +752,7 @@ static NSString *LocalIPv4(void){
  nw_connection_send(connection,data,NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT,true,^(nw_error_t error){[weak close:connection];});
 }
 - (void)close:(nw_connection_t)connection{
+ [self markBusy:connection busy:NO];
  [self.connections removeObject:connection];nw_connection_cancel(connection);
 }
 @end
